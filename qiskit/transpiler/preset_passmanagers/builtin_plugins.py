@@ -626,6 +626,13 @@ class OptimizationPassManager(PassManagerStagePlugin):
             case bad:
                 raise TranspilerError(f"Invalid optimization_level: {bad}")
 
+        if optimization_level in {2, 3}:
+            # `RemoveDiagonalGatesBeforeMeasure` is run during the init stage, but the
+            # optimization loop may expose new diagonal gates directly before measurements
+            # (for example, by merging `ry(pi); ry(-pi)` into a single `u1`), so it is run
+            # once more now that the circuit has reached its optimized form.
+            post_loop.append(RemoveDiagonalGatesBeforeMeasure())
+
         # Obtain the translation method required for this pass to work
         translation = PassManagerStagePluginManager().get_passmanager_stage(
             "translation",

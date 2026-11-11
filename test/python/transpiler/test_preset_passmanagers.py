@@ -155,6 +155,23 @@ class TestPresetPassManager(QiskitTestCase):
         op_nodes = [node.name for node in dag.topological_op_nodes()]
         self.assertNotIn("u1", op_nodes)  # Check if the diagonal Z-Gates (u1) were removed
 
+    @combine(level=[2, 3], name="level{level}")
+    def test_diagonal_gates_exposed_by_optimization_removed(self, level):
+        """Diagonal gates that only appear after the optimization loop are removed.
+        See: https://github.com/Qiskit/qiskit/issues/17266
+        """
+        circuit = QuantumCircuit(1, 1)
+        circuit.s(0)
+        circuit.ry(np.pi, 0)
+        circuit.ry(-np.pi, 0)
+        circuit.measure(0, 0)
+
+        result = transpile(circuit, optimization_level=level)
+
+        # `ry(pi); ry(-pi)` is the identity, so `s` ends up directly before the measurement
+        # once the 1q gates are merged, making it removable as a diagonal gate.
+        self.assertEqual([instruction.operation.name for instruction in result.data], ["measure"])
+
     @combine(level=[0, 1, 2, 3], name="level{level}")
     def test_no_basis_gates(self, level):
         """Test that basis_gates can be None (level={level})"""

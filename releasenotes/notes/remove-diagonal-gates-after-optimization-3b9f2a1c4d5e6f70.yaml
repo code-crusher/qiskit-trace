@@ -1,0 +1,9 @@
+---
+fixes:
+  - |
+    At optimization levels 2 and 3, :func:`.transpile` now runs
+    :class:`.RemoveDiagonalGatesBeforeMeasure` again after the optimization loop.
+    Previously the pass only ran in the init stage, so diagonal gates that became
+    exposed later, for example by :class:`.Optimize1qGatesDecomposition` merging
+    ``ry(pi); ry(-pi)`` into a single ``u1`` right before a measurement, were left
+    in the output circuit. Fixed `#17266 <https://github.com/Qiskit/qiskit/issues/17266>`__.
