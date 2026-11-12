@@ -331,6 +331,32 @@ impl Drop for CPass {
 // SAFETY: `CPass` is only created and freed via `Box`.
 const _: () = unsafe { expose_by_box!(CPass) };
 
+impl CPass {
+    /// Is this pass driven by the given `RunOwned` vtable function?
+    ///
+    /// This is used by the built-in pass library to distinguish its own passes from user-defined
+    /// ones; see `qk_pass_builtin_new` and friends.
+    pub(crate) fn is_run_by(
+        &self,
+        func: unsafe extern "C" fn(
+            *mut c_void,
+            *mut c_void,
+            *mut PassContext,
+            *mut *mut CompilationError,
+        ) -> *mut c_void,
+    ) -> bool {
+        std::ptr::fn_addr_eq(self.vtable.run_owned, func)
+    }
+
+    /// The data pointer (`this`) that was given alongside the vtable at construction.
+    ///
+    /// The pointer's type is whatever the pass's vtable shims expect; for built-in passes it is a
+    /// boxed `BuiltinTranspilerPass`.
+    pub(crate) fn data_ptr(&self) -> *mut c_void {
+        self.this
+    }
+}
+
 // TODO: having everything exposed as `CPass` is awkward for a future world where we have handles to
 // built-in passes?
 

@@ -44,6 +44,8 @@ pub enum ExitCode {
     DuplicateIndexError = 104,
     /// Invalid ``QkOperationKind``.
     InvalidOperationKind = 105,
+    /// A pass was given a configuration option it does not support, or an invalid value for one.
+    InvalidPassOption = 106,
     /// Error related to arithmetic operations or similar.
     ArithmeticError = 200,
     /// Mismatching number of qubits.

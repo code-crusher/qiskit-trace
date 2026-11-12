@@ -1,4 +1,4 @@
-__version__ = "2.6.0-rc1"
+__version__ = "2.7.0-dev"
 circuit = [
     "qk_api_version",
     "",
@@ -98,7 +98,7 @@ circuit = [
     "qk_circuit_delay_dt",
     "qk_circuit_delay_unit",
     "qk_circuit_custom_operation",
-    "",
+    "qk_control_flow_condition_reg_cond_biguint",
     "",
     "",
     "",
@@ -321,8 +321,8 @@ circuit = [
     "qk_var_name",
     "qk_var_type_info",
     "qk_stretch_name",
-    "",
-    "",
+    "qk_value_biguint",
+    "qk_biguint_clear",
     "",
     "",
     "",
@@ -1006,9 +1006,9 @@ transpile = [
     "qk_pass_vtable_free",
     "qk_pass_new",
     "qk_pass_free",
-    "",
-    "",
-    "",
+    "qk_pass_builtin_new",
+    "qk_pass_builtin_set_target",
+    "qk_pass_builtin_set_approximation_degree",
     "",
     "",
     "",
@@ -1137,4 +1137,5 @@ qpy = [
     "",
     "",
 ]
+mir = []
 

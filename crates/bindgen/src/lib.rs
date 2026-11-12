@@ -91,6 +91,7 @@ pub static EXPORT_INCLUDE: &[&str] = &[
     "CustomOpSlot",
     "IrBuiltin",
     "IrSlot",
+    "PassBuiltin",
     "PassContext",
     "PassSlot",
     "VtableEntry",

@@ -17,6 +17,7 @@ pub mod convert_to_pauli_rotations;
 pub mod elide_permutations;
 pub mod gate_direction;
 pub mod inverse_cancellation;
+pub mod library;
 pub mod litinski_transformation;
 pub mod optimize_1q_sequences;
 pub mod remove_diagonal_gates_before_measure;

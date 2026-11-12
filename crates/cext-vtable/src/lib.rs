@@ -506,6 +506,8 @@ mod transpiler {
         use crate::impl_::prelude::*;
         #[cfg(feature = "addr")]
         use qiskit_cext::passmanager;
+        #[cfg(feature = "addr")]
+        use qiskit_cext::transpiler::passes::library;
 
         static FUNCTIONS_IR: ExportedFunctions = ExportedFunctions::leaves(20, || {
             vec![
@@ -520,6 +522,9 @@ mod transpiler {
                 export_fn!(passmanager::qk_pass_vtable_free),
                 export_fn!(passmanager::qk_pass_new),
                 export_fn!(passmanager::qk_pass_free),
+                export_fn!(library::qk_pass_builtin_new),
+                export_fn!(library::qk_pass_builtin_set_target),
+                export_fn!(library::qk_pass_builtin_set_approximation_degree),
             ]
         });
         static FUNCTIONS_ERROR: ExportedFunctions = ExportedFunctions::leaves(20, || {
