@@ -16,11 +16,9 @@ use ndarray::{ArcArrayD, ArrayD, IxDyn};
 use num_complex::{Complex32, Complex64};
 
 use super::broadcast::{broadcast_elementwise, broadcast_shape};
-use super::{DType, Dim, KeyTensor, TensorError, TensorType};
+use super::{BitTensor, DType, Dim, KeyTensor, TensorError, TensorType};
 
 /// A tensor of one of the supported dtypes.
-///
-/// Each variant wraps a reference-counted  copy-on-write dynamic ndarray (`ArcArrayD`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tensor {
     C64(ArcArrayD<Complex32>), // complex
@@ -35,8 +33,8 @@ pub enum Tensor {
     U16(ArcArrayD<u16>),
     U32(ArcArrayD<u32>),
     U64(ArcArrayD<u64>),
-    Bit(ArcArrayD<u8>), // bool
-    Key(KeyTensor),     // prng key
+    Bit(BitTensor), // bool
+    Key(KeyTensor), // prng key
 }
 
 /// Return the error raised when an `op` has no implementation for some type(s).
@@ -53,13 +51,15 @@ fn dtype_error(op: &'static str, lhs: DType, rhs: DType) -> TensorError {
 
 /// Cast an array of a real numeric type to any supported dtype.
 ///
-/// A cast to `Bit` compares against zero, like NumPy's cast to `bool`. A `Bit` tensor holds only 0
-/// or 1, and truncating `2.5` to `2` would leave a value the bitwise operations cannot read.
+/// A cast to `Bit` compares against zero, like NumPy's cast to `bool`.
 macro_rules! cast_real {
     ($arr:expr, $src:ty, $target:expr) => {
         match $target {
             DType::Key(_) => unreachable!("a key target is refused by Tensor::cast"),
-            DType::Bit => Tensor::Bit($arr.mapv(|x: $src| u8::from(x != 0 as $src)).into_shared()),
+            DType::Bit => Tensor::Bit(
+                BitTensor::from_bools($arr.iter().map(|&x: &$src| x != 0 as $src), $arr.shape())
+                    .expect("one bit per element of the array's own shape"),
+            ),
             DType::U8 => Tensor::U8($arr.mapv(|x: $src| x as u8).into_shared()),
             DType::U16 => Tensor::U16($arr.mapv(|x: $src| x as u16).into_shared()),
             DType::U32 => Tensor::U32($arr.mapv(|x: $src| x as u32).into_shared()),
@@ -80,6 +80,13 @@ macro_rules! cast_real {
             ),
         }
     };
+}
+
+/// Return the bits of `tensor` as one byte per bit, each either `0` or `1`.
+fn unpack(tensor: &BitTensor) -> ArrayD<u8> {
+    let bytes: Vec<u8> = tensor.to_bool_vec().into_iter().map(u8::from).collect();
+    ArrayD::from_shape_vec(IxDyn(tensor.shape()), bytes)
+        .expect("one byte per element of the tensor's own shape")
 }
 
 /// Cast an array of a complex type to a complex dtype.
@@ -254,7 +261,7 @@ impl Tensor {
             Tensor::U32(a) => broadcast!(U32, a),
             Tensor::U16(a) => broadcast!(U16, a),
             Tensor::U8(a) => broadcast!(U8, a),
-            Tensor::Bit(a) => broadcast!(Bit, a),
+            Tensor::Bit(a) => a.broadcast_to(shape).ok().map(Tensor::Bit),
             Tensor::Key(keys) => keys.broadcast_to(shape).map(Tensor::Key),
         }
         .ok_or_else(|| TensorError::ShapeMismatch {
@@ -280,7 +287,11 @@ impl Tensor {
         }
         match &self {
             Tensor::Key(_) => unreachable!("a key dtype is refused above"),
-            Tensor::Bit(a) | Tensor::U8(a) => cast_real!(a, u8, target),
+            Tensor::Bit(a) => {
+                let unpacked = unpack(a);
+                cast_real!(&unpacked, u8, target)
+            }
+            Tensor::U8(a) => cast_real!(a, u8, target),
             Tensor::U16(a) => cast_real!(a, u16, target),
             Tensor::U32(a) => cast_real!(a, u32, target),
             Tensor::U64(a) => cast_real!(a, u64, target),
@@ -493,11 +504,10 @@ impl std::ops::Rem for Tensor {
 /// Define an element-wise bitwise method on [`Tensor`] over `Bit` operands.
 ///
 /// Bitwise operations are defined for `Bit` alone, so these are separate from
-/// [`impl_tensor_binop`], whose arms cover the numeric dtypes and not `Bit`. As there, the operand
-/// shapes are pre-validated with [`broadcast_shape`] so that the underlying ndarray operator, which
-/// broadcasts but panics on a shape mismatch, cannot panic.
+/// [`impl_tensor_binop`], whose arms cover the numeric dtypes and not `Bit`. Each delegates to a
+/// [`BitTensor`] "kernel".
 macro_rules! impl_tensor_bitop {
-    ($method:ident, $op:tt, $op_name:literal) => {
+    ($method:ident, $kernel:ident, $op_name:literal) => {
         impl Tensor {
             #[doc = concat!(
                 "Element-wise `",
@@ -507,9 +517,8 @@ macro_rules! impl_tensor_bitop {
                 "[`TensorError::ShapeMismatch`] if the shapes are not broadcast-compatible."
             )]
             pub fn $method(&self, rhs: &Tensor) -> Result<Tensor, TensorError> {
-                broadcast_shape(self.shape(), rhs.shape())?;
                 match (self, rhs) {
-                    (Tensor::Bit(a), Tensor::Bit(b)) => Ok(Tensor::Bit((a $op b).into_shared())),
+                    (Tensor::Bit(a), Tensor::Bit(b)) => a.$kernel(b).map(Tensor::Bit),
                     _ => Err(TensorError::DTypeMismatch {
                         op: $op_name,
                         lhs: self.dtype(),
@@ -521,9 +530,9 @@ macro_rules! impl_tensor_bitop {
     };
 }
 
-impl_tensor_bitop!(bitand_tensor, &, "bitand");
-impl_tensor_bitop!(bitor_tensor, |, "bitor");
-impl_tensor_bitop!(bitxor_tensor, ^, "bitxor");
+impl_tensor_bitop!(bitand_tensor, and, "bitand");
+impl_tensor_bitop!(bitor_tensor, or, "bitor");
+impl_tensor_bitop!(bitxor_tensor, xor, "bitxor");
 
 #[cfg(test)]
 mod test {
@@ -531,14 +540,18 @@ mod test {
     use crate::tensor::PrngKind;
     use ndarray::IxDyn;
 
+    /// Return a `Bit` tensor of logical shape `shape` over `values`, taken in row-major order.
+    fn bit(values: &[bool], shape: &[usize]) -> Tensor {
+        Tensor::Bit(BitTensor::from_bools(values.iter().copied(), shape).unwrap())
+    }
+
     #[test]
     fn test_tensor_equality() {
         assert_eq!(Tensor::from([1.0_f64, 2.0]), Tensor::from([1.0_f64, 2.0]));
         assert_ne!(Tensor::from([1.0_f64, 2.0]), Tensor::from([1.0_f64, 3.0]));
 
-        // Bit and U8 share a storage type but are distinct dtypes.
-        let bits = ndarray::ArrayD::from_elem(IxDyn(&[2]), 1u8).into_shared();
-        assert_ne!(Tensor::Bit(bits.clone()), Tensor::U8(bits));
+        // A `Bit` tensor is unequal to the `U8` tensor of the same values.
+        assert_ne!(bit(&[true, true], &[2]), Tensor::from([1_u8, 1]));
     }
 
     // Construction, dtype, shape.
@@ -571,6 +584,44 @@ mod test {
         let t = Tensor::from([1i64, 2, 3, 4]);
         assert_eq!(t.dtype(), DType::I64);
         assert_eq!(t.shape(), &[4]);
+    }
+
+    #[test]
+    fn test_a_bit_tensor_packs_eight_bits_to_a_byte() {
+        // The last axis is bitpacked, so a row of 100 bits occupies 13 bytes rather than 100, and
+        // the padding of the final byte is not a bit of the tensor.
+        let values = vec![true; 3 * 100];
+        let Tensor::Bit(bits) = bit(&values, &[3, 100]) else {
+            panic!("expected Bit tensor")
+        };
+        assert_eq!(bits.shape(), &[3, 100]);
+        assert_eq!(bits.num_bits(), 100);
+        assert_eq!(bits.bytes_per_row(), 13);
+        assert_eq!(bits.to_bool_vec(), values);
+    }
+
+    #[test]
+    fn test_bitwise_ops_span_a_row_wider_than_a_byte() {
+        // 11 bits leave five padding bits in the row's final byte, which the op must ignore.
+        let mut lhs = vec![false; 11];
+        lhs[0] = true;
+        lhs[10] = true;
+        let mut rhs = vec![false; 11];
+        rhs[1] = true;
+        rhs[10] = true;
+
+        let mut and = vec![false; 11];
+        and[10] = true;
+        let mut or = vec![true; 11];
+        or[2..10].fill(false);
+        let mut xor = vec![false; 11];
+        xor[0] = true;
+        xor[1] = true;
+
+        let (lhs, rhs) = (bit(&lhs, &[11]), bit(&rhs, &[11]));
+        assert_eq!(lhs.bitand_tensor(&rhs).unwrap(), bit(&and, &[11]));
+        assert_eq!(lhs.bitor_tensor(&rhs).unwrap(), bit(&or, &[11]));
+        assert_eq!(lhs.bitxor_tensor(&rhs).unwrap(), bit(&xor, &[11]));
     }
 
     #[test]
@@ -729,17 +780,16 @@ mod test {
 
     #[test]
     fn test_cast_to_bit_tests_against_zero() {
-        // Any non-zero value becomes 1, so a Bit tensor never holds anything else.
+        // Any non-zero value becomes a true bit.
         let t = Tensor::from([0.0_f64, 0.5, 1.0, 2.5, -3.0]);
-        let Tensor::Bit(bits) = t.cast(DType::Bit) else {
-            panic!("expected Bit tensor")
-        };
-        assert_eq!(bits.as_slice().unwrap(), &[0, 1, 1, 1, 1]);
-
-        let Tensor::Bit(bits) = Tensor::from([0_i32, 7, -7]).cast(DType::Bit) else {
-            panic!("expected Bit tensor")
-        };
-        assert_eq!(bits.as_slice().unwrap(), &[0, 1, 1]);
+        assert_eq!(
+            t.cast(DType::Bit),
+            bit(&[false, true, true, true, true], &[5])
+        );
+        assert_eq!(
+            Tensor::from([0_i32, 7, -7]).cast(DType::Bit),
+            bit(&[false, true, true], &[3])
+        );
     }
 
     #[test]
@@ -762,14 +812,10 @@ mod test {
         assert_eq!(arr.as_slice().unwrap(), &[1.0, 2.0, 3.0, 1.0, 2.0, 3.0]);
 
         // A single element reaches any shape.
-        let Tensor::Bit(arr) =
-            Tensor::Bit(ndarray::ArrayD::from_elem(IxDyn(&[1]), 1u8).into_shared())
-                .broadcast_to(&[2, 2])
-                .unwrap()
-        else {
-            panic!("expected Bit tensor")
-        };
-        assert_eq!(arr.as_slice().unwrap(), &[1, 1, 1, 1]);
+        assert_eq!(
+            bit(&[true], &[1]).broadcast_to(&[2, 2]).unwrap(),
+            bit(&[true; 4], &[2, 2])
+        );
     }
 
     #[test]
@@ -1291,7 +1337,7 @@ mod test {
             DType::C128,
         ];
         let sources = [
-            Tensor::Bit(ndarray::ArrayD::from_elem(IxDyn(&[2]), 1u8).into_shared()),
+            bit(&[true; 2], &[2]),
             Tensor::U8(ndarray::ArrayD::from_elem(IxDyn(&[2]), 1u8).into_shared()),
             Tensor::U16(ndarray::ArrayD::from_elem(IxDyn(&[2]), 1u16).into_shared()),
             Tensor::U32(ndarray::ArrayD::from_elem(IxDyn(&[2]), 1u32).into_shared()),
@@ -1325,9 +1371,8 @@ mod test {
             assert!(approx::abs_diff_eq!(arr[0].im, 2.0_f64, epsilon = 1e-6));
         }
 
-        // Spot-check a numeric value (Bit(1) -> F64 -> 1.0).
-        let bit_to_f64 = Tensor::Bit(ndarray::ArrayD::from_elem(IxDyn(&[2]), 1u8).into_shared())
-            .cast(DType::F64);
+        // Spot-check a numeric value (true -> F64 -> 1.0).
+        let bit_to_f64 = bit(&[true; 2], &[2]).cast(DType::F64);
         if let Tensor::F64(arr) = bit_to_f64 {
             assert_eq!(arr.as_slice().unwrap(), &[1.0_f64, 1.0]);
         } else {

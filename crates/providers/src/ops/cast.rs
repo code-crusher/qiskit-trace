@@ -67,7 +67,7 @@ impl ProgramOp for Cast {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::tensor::Dim;
+    use crate::tensor::{BitTensor, Dim};
     use num_complex::Complex64;
 
     /// Return the type of a 1-D tensor of `len` elements.
@@ -146,7 +146,7 @@ mod test {
                 .eval(&[Tensor::from([0.0_f64, 2.5, -1.0])])
                 .unwrap(),
             vec![Tensor::Bit(
-                ndarray::arr1(&[0u8, 1, 1]).into_dyn().into_shared()
+                BitTensor::from_bools([false, true, true], &[3]).unwrap()
             )]
         );
     }
