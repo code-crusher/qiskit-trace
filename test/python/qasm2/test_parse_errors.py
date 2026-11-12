@@ -64,7 +64,11 @@ def bad_token_parametrisation():
     token_set = frozenset(T)
 
     def without(*tokens):
-        return token_set - set(tokens)
+        # Iterate in declaration order rather than hash order so that the parametrised tests are
+        # generated in the same order in every process; otherwise, tools such as `pytest-xdist`
+        # see different test orderings between workers (whose hash seeds differ) and abort with
+        # "Different tests were collected between ...".
+        return sorted(token_set - set(tokens), key=lambda token: token.value)
 
     # ddt isn't a particularly great parametriser - it'll only correctly unpack tuples and lists in
     # the way we really want, but if we want to control the test id, we also have to set `__name__`
