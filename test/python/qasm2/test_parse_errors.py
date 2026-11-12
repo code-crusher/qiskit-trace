@@ -170,7 +170,9 @@ def bad_token_parametrisation():
         ("if (cond == 0", without(T.RPAREN)),
         ("if (cond == 0)", without(T.ID, T.RESET, T.MEASURE)),
     ]:
-        for token in disallowed:
+        # Iterate in a deterministic order so that all pytest-xdist workers
+        # generate the same set of test ids.
+        for token in sorted(disallowed, key=lambda token: token.name):
             yield BadTokenCase(statement, token.value, name=f"'{statement}'-{token.name.lower()}")
 
 

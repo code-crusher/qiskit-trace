@@ -129,18 +129,20 @@ class TestUnitarySynthesisPlugin(QiskitTestCase):
     def setUpClass(cls):
         super().setUpClass()
         cls.MOCK_PLUGINS["_controllable"] = ControllableSynthesis
-        # Decorate all test functions to patch the plugin manager with a fake one, which inserts our
-        # testing mocks into the lookup.  It's easier to do this than to correctly register them,
-        # because it's fiddly to trick importlib into registering new entry points metadata without
-        # actually installing a package before the interpreter was invoked.  We don't want to leak
-        # any testing classes out into public releases, so we just patch.
-        decorator = unittest.mock.patch(
+        # Patch the plugin manager with a fake one for the duration of the class, which inserts
+        # our testing mocks into the lookup.  It's easier to do this than to correctly register
+        # them, because it's fiddly to trick importlib into registering new entry points
+        # metadata without actually installing a package before the interpreter was invoked.  We
+        # don't want to leak any testing classes out into public releases, so we just patch.
+        # Using 'start'/'stop' rather than decorating the test methods means that this works
+        # under pytest as well as the stdlib runner: pytest resolves test methods at collection
+        # time, before this method has had a chance to wrap them.
+        cls._patcher = unittest.mock.patch(
             "qiskit.transpiler.passes.synthesis.plugin.UnitarySynthesisPluginManager",
             functools.partial(_MockPluginManager, plugins=cls.MOCK_PLUGINS),
         )
-        for name in dir(cls):
-            if name.startswith("test_"):
-                setattr(cls, name, decorator(getattr(cls, name)))
+        cls._patcher.start()
+        cls.addClassCleanup(cls._patcher.stop)
 
     def setUp(self):
         super().setUp()

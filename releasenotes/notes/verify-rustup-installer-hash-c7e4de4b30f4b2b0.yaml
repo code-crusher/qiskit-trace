@@ -1,0 +1,15 @@
+---
+build:
+  - |
+      The Linux wheel build containers (the ``before-all`` step of the
+      ``cibuildwheel`` configuration) now download a version-pinned
+      ``rustup-init`` binary from the immutable rustup release archive at
+      ``https://static.rust-lang.org/rustup/archive/`` and verify its SHA-256
+      hash against pinned values before executing it, instead of piping the
+      latest ``https://sh.rustup.rs`` installer straight into a shell.  This
+      prevents a compromised or tampered download from running arbitrary code
+      in the build environment.  When updating the pinned
+      ``RUSTUP_VERSION`` in ``tools/install_rust.sh``, the expected hashes
+      must be refreshed from the upstream sidecar files at
+      ``https://static.rust-lang.org/rustup/archive/<version>/<target>/rustup-init.sha256``.
+      See `#17305 <https://github.com/Qiskit/qiskit/issues/17305>`__.
