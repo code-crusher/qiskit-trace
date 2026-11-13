@@ -1,0 +1,12 @@
+---
+fixes:
+  - |
+    Fixed a bug in :meth:`.Gate.control` (and everywhere a ``ctrl_state``
+    bitstring is accepted, e.g. :class:`.ControlledGate` and
+    :class:`.AnnotatedOperation`) where a ``ctrl_state`` given as a bitstring
+    was not checked to have a length equal to ``num_ctrl_qubits``. Previously,
+    a too-short bitstring (e.g. ``"1"`` with two control qubits) was silently
+    accepted by interpreting it as an integer, while a too-long bitstring was
+    rejected only if its value was out of range. Both now raise a
+    :class:`.CircuitError`, as documented.
+    Fixed `#17228 <https://github.com/Qiskit/qiskit/issues/17228>`__.

@@ -1364,6 +1364,10 @@ class TestControlledGate(QiskitTestCase):
             base_gate.control(num_ctrl_qubits, ctrl_state=2**num_ctrl_qubits, annotated=False)
         with self.assertRaises(CircuitError):
             base_gate.control(num_ctrl_qubits, ctrl_state="201", annotated=False)
+        with self.assertRaises(CircuitError):
+            base_gate.control(num_ctrl_qubits, ctrl_state="01", annotated=False)
+        with self.assertRaises(CircuitError):
+            base_gate.control(num_ctrl_qubits, ctrl_state="1111", annotated=False)
 
     def test_base_gate_params_reference(self):
         """
