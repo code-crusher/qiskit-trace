@@ -170,7 +170,10 @@ def bad_token_parametrisation():
         ("if (cond == 0", without(T.RPAREN)),
         ("if (cond == 0)", without(T.ID, T.RESET, T.MEASURE)),
     ]:
-        for token in disallowed:
+        # 'disallowed' is a set of enum members, so its iteration order varies between processes
+        # when Python hash randomisation is active.  That breaks pytest-xdist collection, which
+        # requires all workers to produce tests in the same order, so explicitly sort them.
+        for token in sorted(disallowed, key=lambda token: token.name):
             yield BadTokenCase(statement, token.value, name=f"'{statement}'-{token.name.lower()}")
 
 
