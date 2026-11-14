@@ -1005,6 +1005,33 @@ class TestUnitarySynthesisTarget(QiskitTestCase):
             for basis_gate in basis_gates:
                 self.assertLessEqual(out.count_ops()[basis_gate], gate_counts[basis_gate])
 
+    def test_determinism_between_equal_2q_gates(self):
+        """Test that an overcomplete target without errors always synthesises to the same gate.
+
+        Regression test of #17218.
+        """
+        # These gates are all equally good when the target records no error rates, so the choice
+        # between them has to come from a canonical ordering rather than from a `HashSet`.
+        basis_gates = ["u", "cx", "cz", "ecr"]
+        target = Target.from_configuration(basis_gates=basis_gates)
+        qc = QuantumCircuit(2)
+        for k in range(4):
+            qc.cx(k % 2, (k + 1) % 2)
+            qc.ry(0.3 + k, 0)
+            qc.rz(0.1 + 0.7 * k, 1)
+
+        outputs = {
+            tuple(
+                sorted(
+                    transpile(
+                        qc, target=target, optimization_level=2, seed_transpiler=0
+                    ).count_ops().items()
+                )
+            )
+            for _ in range(10)
+        }
+        self.assertEqual(len(outputs), 1)
+
     def test_determinism_parallelism(self):
         """Test that the decomposition is deterministic in parallel mode with >50 gates to synthesize."""
         gate_counts = {"rx": 800, "rz": 1100, "iswap": 300}
