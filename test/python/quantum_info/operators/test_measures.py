@@ -16,7 +16,7 @@ from ddt import ddt
 
 import numpy as np
 
-from qiskit.quantum_info import Operator, Choi
+from qiskit.quantum_info import Operator, Choi, Kraus
 from qiskit.quantum_info import process_fidelity
 from qiskit.quantum_info import average_gate_fidelity
 from qiskit.quantum_info import gate_error
@@ -85,6 +85,21 @@ class TestOperatorMeasures(QiskitTestCase):
         fid = process_fidelity(chan)
         self.assertLogs("qiskit.quantum_info.operators.measures", level="WARNING")
         self.assertAlmostEqual(fid, 0, places=15)
+
+    def test_nontp_process_fidelity_non_hermitian_residual(self):
+        """Test process_fidelity warns for a non-Hermitian TP residual.
+
+        The Choi partial trace Tr_out[Choi] differs from the identity only
+        in a single off-diagonal entry, so the eigenvalues of
+        Tr_out[Choi] - I are all zero. The non-TP diagnostic must still
+        emit a warning. See gh-17094.
+        """
+        right = np.eye(2, dtype=complex)
+        right[0, 1] = 1e-3
+        chan = Kraus(([np.eye(2, dtype=complex)], [right]))
+        with self.assertLogs("qiskit.quantum_info.operators.measures", level="WARNING") as logs:
+            process_fidelity(chan, require_cp=False, require_tp=True)
+        self.assertTrue(any("is not TP" in message for message in logs.output))
 
     def test_operator_average_gate_fidelity(self):
         """Test the average_gate_fidelity function for operator inputs"""

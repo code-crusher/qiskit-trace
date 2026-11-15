@@ -117,6 +117,25 @@ class TestKraus(ChannelTestCase):
         self.assertFalse(Kraus(([self.UI], [self.UX])).is_cptp())
         self.assertFalse(Kraus([self.UI, self.UX]).is_cptp())
 
+    def test_is_tp(self):
+        """Test is_tp method."""
+        self.assertTrue(Kraus(self.depol_kraus(0.5)).is_tp())
+        self.assertTrue(Kraus(self.UX).is_tp())
+        # Non-TP should return false
+        self.assertFalse(Kraus([self.UI, self.UX]).is_tp())
+
+    def test_is_tp_non_hermitian_residual(self):
+        """Test is_tp detects a non-Hermitian partial-trace residual.
+
+        The Choi partial trace Tr_out[Choi] has a non-zero off-diagonal
+        entry, so it is not the identity even though the eigenvalues of
+        Tr_out[Choi] - I are all zero. See gh-17094.
+        """
+        right = self.UI.copy()
+        right[0, 1] = 1e-3
+        chan = Kraus(([self.UI], [right]))
+        self.assertFalse(chan.is_tp(atol=1e-8, rtol=0))
+
     def test_conjugate(self):
         """Test conjugate method."""
         kraus_l, kraus_r = self.rand_kraus(2, 4, 4), self.rand_kraus(2, 4, 4)

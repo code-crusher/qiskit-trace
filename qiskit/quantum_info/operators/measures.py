@@ -24,6 +24,7 @@ from qiskit.quantum_info.operators.base_operator import BaseOperator
 from qiskit.quantum_info.operators.operator import Operator
 from qiskit.quantum_info.operators.channel.quantum_channel import QuantumChannel
 from qiskit.quantum_info.operators.channel import Choi, SuperOp
+from qiskit.quantum_info.operators.predicates import is_identity_matrix
 from qiskit.quantum_info.states.densitymatrix import DensityMatrix
 from qiskit.quantum_info.states.measures import state_fidelity
 from qiskit.utils import optionals as _optionals
@@ -74,7 +75,7 @@ def process_fidelity(
                            [Default: True].
         require_tp (bool): check if input and target channels are
                            trace-preserving and if non-TP log warning
-                           containing negative eigenvalues of partial
+                           containing non-zero eigenvalues of the partial
                            Choi-matrix :math:`Tr_{\text{out}}[\mathcal{E}] - I`
                            [Default: True].
 
@@ -108,9 +109,10 @@ def process_fidelity(
                     cp_cond[neg],
                 )
         if chan is not None and require_tp:
-            tp_cond = _tp_condition(chan)
-            non_zero = np.logical_not(np.isclose(tp_cond, 0, atol=chan.atol, rtol=chan.rtol))
-            if np.any(non_zero):
+            tr_choi = _tp_condition(chan)
+            if not is_identity_matrix(tr_choi, rtol=chan.rtol, atol=chan.atol):
+                tp_cond = np.linalg.eigvalsh(tr_choi - np.eye(len(tr_choi)))
+                non_zero = np.logical_not(np.isclose(tp_cond, 0, atol=chan.atol, rtol=chan.rtol))
                 logger.warning(
                     "%s channel is not TP. Tr_2[Choi] - I has non-zero eigenvalues: %s",
                     label,
@@ -175,7 +177,7 @@ def average_gate_fidelity(
                            [Default: True].
         require_tp (bool): check if input and target channels are
                            trace-preserving and if non-TP log warning
-                           containing negative eigenvalues of partial
+                           containing non-zero eigenvalues of the partial
                            Choi-matrix :math:`Tr_{\text{out}}[\mathcal{E}] - I`
                            [Default: True].
 
@@ -232,7 +234,7 @@ def gate_error(
                            [Default: True].
         require_tp (bool): check if input and target channels are
                            trace-preserving and if non-TP log warning
-                           containing negative eigenvalues of partial
+                           containing non-zero eigenvalues of the partial
                            Choi-matrix :math:`Tr_{\text{out}}[\mathcal{E}] - I`
                            [Default: True].
 
@@ -403,7 +405,7 @@ def _cp_condition(channel):
 
 
 def _tp_condition(channel):
-    """Return partial tr Choi-matrix eigenvalues for checking if channel is TP"""
+    """Return the partial-trace Choi-matrix Tr_out[Choi] for checking if channel is TP"""
     if isinstance(channel, QuantumChannel):
         if not isinstance(channel, Choi):
             channel = Choi(channel)
@@ -414,4 +416,4 @@ def _tp_condition(channel):
     else:
         unitary = Operator(channel).data
         tr_choi = np.tensordot(unitary, unitary.conj(), axes=(0, 0))
-    return np.linalg.eigvalsh(tr_choi - np.eye(len(tr_choi)))
+    return tr_choi

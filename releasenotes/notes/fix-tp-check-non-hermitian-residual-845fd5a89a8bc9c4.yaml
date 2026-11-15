@@ -1,0 +1,12 @@
+---
+fixes:
+  - |
+    Fixed :meth:`.QuantumChannel.is_tp` and the trace-preserving diagnostic in
+    :func:`.process_fidelity` (and the other quantum-information measures that
+    use it) so that they detect trace-preserving violations caused by a
+    non-Hermitian partial-trace residual. Previously the residual
+    :math:`\operatorname{Tr}_{\text{out}}[\mathcal{E}] - I` was checked using
+    only its eigenvalues, which missed residuals whose eigenvalues are all zero
+    even though the matrix itself is non-zero (such as a strictly triangular
+    residual). Fixed
+    `#17094 <https://github.com/Qiskit/qiskit/issues/17094>`__.
