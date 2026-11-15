@@ -61,10 +61,14 @@ def bad_token_parametrisation():
     statements, then puts various invalid tokens after them to verify that the parser correctly
     throws an error on them."""
 
-    token_set = frozenset(T)
+    # Iterate the enum in definition order rather than a frozenset, whose iteration order depends
+    # on hash randomization and differs between xdist workers' processes, making pytest abort
+    # collection with "Different tests were collected".
+    token_set = list(T)
 
     def without(*tokens):
-        return token_set - set(tokens)
+        excluded = set(tokens)
+        return [token for token in token_set if token not in excluded]
 
     # ddt isn't a particularly great parametriser - it'll only correctly unpack tuples and lists in
     # the way we really want, but if we want to control the test id, we also have to set `__name__`
