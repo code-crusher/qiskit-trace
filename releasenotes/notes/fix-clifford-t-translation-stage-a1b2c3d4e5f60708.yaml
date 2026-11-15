@@ -1,0 +1,12 @@
+---
+fixes:
+  - |
+    Fixed a bug in the legacy Clifford+T preset pass manager used by
+    :func:`.transpile` when the target basis (or ``basis_gates``) consists of
+    Clifford+T gates. Passing an explicit ``translation_method`` alongside such a
+    basis raised ``TranspilerError: Invalid plugin name <name> for stage init``,
+    because the requested translation plugin was looked up in the ``init`` stage's
+    plugin registry instead of the ``translation`` stage's. The plugin is now
+    resolved from the ``translation`` stage as documented, so
+    e.g. ``transpile(..., basis_gates=["cx", "h", "t"], translation_method="translator")``
+    works as expected.

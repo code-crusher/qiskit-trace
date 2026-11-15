@@ -217,7 +217,10 @@ def clifford_t_pass_manager_legacy(
     # optimizing Clifford+RZ, and then translating to Clifford+T.
     if (translation_method := pass_manager_config.translation_method) is not None:
         translation = plugin_manager.get_passmanager_stage(
-            "init", translation_method, pass_manager_config, optimization_level=optimization_level
+            "translation",
+            translation_method,
+            pass_manager_config,
+            optimization_level=optimization_level,
         )
     else:
         translation = (

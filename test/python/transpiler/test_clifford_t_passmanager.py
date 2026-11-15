@@ -698,6 +698,44 @@ class TestCliffordTPassManager(QiskitTestCase):
             passes = [x.__class__.__name__ for x in pm.to_flow_controller().tasks]
             self.assertIn("CustomTransformationPass", passes)
 
+    def test_legacy_translation_method_uses_translation_stage(self):
+        """Regression test for the legacy Clifford+T pipeline.
+
+        A ``translation_method`` passed to ``generate_preset_pass_manager`` with a
+        Clifford+T basis must be resolved against the ``translation`` stage plugin
+        registry. It was previously resolved against the ``init`` stage, so any
+        such call raised ``TranspilerError: Invalid plugin name ... for stage init``.
+        """
+        basis_gates = ["cx", "h", "t"]
+        with self.subTest("builtin plugin resolves and is placed in the translation stage"):
+            pm = generate_preset_pass_manager(
+                optimization_level=1, basis_gates=basis_gates, translation_method="translator"
+            )
+            passes = [x.__class__.__name__ for x in pm.translation.to_flow_controller().tasks]
+            self.assertIn("BasisTranslator", passes)
+
+        with self.subTest("explicit plugin name resolves against the translation stage"):
+            with unittest.mock.patch(
+                "qiskit.transpiler.preset_passmanagers.clifford_t."
+                "PassManagerStagePluginManager.get_passmanager_stage",
+                autospec=True,
+                side_effect=lambda self, stage_name, plugin_name, *args, **kwargs: (
+                    PassManager([CustomTransformationPass()])
+                    if plugin_name == "custom"
+                    else _original_get_passmanager_stage(
+                        self, stage_name, plugin_name, *args, **kwargs
+                    )
+                ),
+            ) as mock_get:
+                pm = generate_preset_pass_manager(
+                    optimization_level=1, basis_gates=basis_gates, translation_method="custom"
+                )
+                requested = [call.args[1:3] for call in mock_get.call_args_list]
+                self.assertIn(("translation", "custom"), requested)
+                self.assertNotIn(("init", "custom"), requested)
+                passes = [x.__class__.__name__ for x in pm.translation.to_flow_controller().tasks]
+                self.assertIn("CustomTransformationPass", passes)
+
     def test_legacy_pass_manager_with_routing_disabled(self):
         """
         Test that in the legacy Clifford+T pipeline, routing is disabled exactly when
