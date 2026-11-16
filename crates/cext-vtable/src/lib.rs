@@ -529,11 +529,21 @@ mod transpiler {
                 export_fn!(passmanager::qk_compilation_error_str),
             ]
         });
+        static FUNCTIONS_PREDICATE: ExportedFunctions = ExportedFunctions::leaves(20, || {
+            vec![
+                export_fn!(passmanager::qk_predicate_vtable_new),
+                export_fn!(passmanager::qk_predicate_vtable_free),
+                export_fn!(passmanager::qk_predicate_new),
+                export_fn!(passmanager::qk_predicate_builtin),
+                export_fn!(passmanager::qk_predicate_free),
+            ]
+        });
         static FUNCTIONS_PASSMANAGER: ExportedFunctions = ExportedFunctions::leaves(20, || {
             vec![
                 export_fn!(passmanager::qk_passmanager_new),
                 export_fn!(passmanager::qk_passmanager_free),
                 export_fn!(passmanager::qk_passmanager_push_pass),
+                export_fn!(passmanager::qk_passmanager_push_while),
                 export_fn!(passmanager::qk_passmanager_run_simple),
             ]
         });
@@ -542,7 +552,8 @@ mod transpiler {
             .add_child(0, &FUNCTIONS_IR)
             .add_child(20, &FUNCTIONS_PASS)
             .add_child(40, &FUNCTIONS_ERROR)
-            .add_child(60, &FUNCTIONS_PASSMANAGER);
+            .add_child(60, &FUNCTIONS_PREDICATE)
+            .add_child(80, &FUNCTIONS_PASSMANAGER);
     }
 
     pub static FUNCTIONS: ExportedFunctions = ExportedFunctions::empty()

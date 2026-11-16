@@ -11,6 +11,7 @@
 // that they have been altered from the originals.
 
 mod pass;
+mod predicate;
 mod task;
 
 use anyhow::Context;
@@ -19,6 +20,7 @@ use qiskit_util::dyn_types::*;
 use std::{any::Any, sync::LazyLock};
 
 pub use pass::*;
+pub use predicate::*;
 pub use task::*;
 
 /// The pass manager execution environment.
@@ -258,6 +260,24 @@ impl PassManager {
         self.try_push_task(Task::Transformation(ob.into_pass()))
     }
 
+    /// Try to push a task that runs `body` until `criterion` says to stop.
+    ///
+    /// This is a typed helper wrapper around [`Task::while_`] and [`Self::try_push_task`]; the `In`
+    /// type parameter is inferred from the criterion, which is what lets a criterion that ignores
+    /// the IR be written generically and reused across bodies.
+    ///
+    /// Fails, returning `body` back to the caller, if the types are incompatible.
+    pub fn try_push_while<In: IR>(
+        &mut self,
+        body: Task,
+        criterion: impl StaticPredicate<In>,
+        max_iterations: usize,
+    ) -> Result<(), (Task, TaskAppendError)> {
+        let body = Task::while_(body, criterion.into_predicate(), max_iterations)
+            .map_err(|(body, err)| (body, TaskAppendError::Task(err)))?;
+        self.try_push_task(body)
+    }
+
     /// Get a reference to a [Task] at a given index.
     pub fn get_task(&self, index: usize) -> Option<&Task> {
         self.tasks.get(index)
@@ -293,6 +313,25 @@ fn execute_task(
                 ir = execute_task(task, ir, context)?;
             }
             Ok(ir)
+        }
+        Task::While {
+            body,
+            criterion,
+            max_iterations,
+        } => {
+            for _ in 0..*max_iterations {
+                if criterion.evaluate(ir.as_ref(), context)? {
+                    return Ok(ir);
+                }
+                ir = execute_task(body, ir, context)?;
+            }
+            if criterion.evaluate(ir.as_ref(), context)? {
+                Ok(ir)
+            } else {
+                Err(PassError::IterationLimit {
+                    max_iterations: *max_iterations,
+                })
+            }
         }
     }
 }
@@ -543,5 +582,127 @@ mod test {
         let lower = LowerToInt.into_pass();
         assert!(add.name().contains("AddOne"));
         assert!(lower.name().contains("LowerToInt"));
+    }
+
+    struct AtLeast(u32);
+    impl StaticPredicate<MyUint> for AtLeast {
+        fn evaluate(&self, ir: &MyUint, _context: &PassContext) -> anyhow::Result<bool> {
+            Ok(ir.0 >= self.0)
+        }
+    }
+
+    #[test]
+    fn test_while_static_predicate() {
+        let mut pm = PassManager::new();
+        pm.try_push_while(
+            Task::Transformation(AddOne.into_pass()),
+            AtLeast(10),
+            100,
+        )
+        .unwrap();
+
+        let (out, _) = pm.run::<MyUint, MyUint>(MyUint(4)).unwrap();
+        assert_eq!(out.0, 10);
+    }
+
+    #[test]
+    fn test_while_closure_predicate() {
+        let mut pm = PassManager::new();
+        pm.try_push_while(
+            Task::Transformation(AddOne.into_pass()),
+            |ir: &MyUint, _: &PassContext| Ok(ir.0 >= 7),
+            100,
+        )
+        .unwrap();
+
+        let (out, _) = pm.run::<MyUint, MyUint>(MyUint(4)).unwrap();
+        assert_eq!(out.0, 7);
+    }
+
+    #[test]
+    fn test_while_runs_zero_times() {
+        // The criterion is evaluated before the body, so a true criterion means the body never runs.
+        let mut pm = PassManager::new();
+        pm.try_push_while(
+            Task::Transformation(AddOne.into_pass()),
+            AtLeast(0),
+            100,
+        )
+        .unwrap();
+
+        let (out, _) = pm.run::<MyUint, MyUint>(MyUint(4)).unwrap();
+        assert_eq!(out.0, 4);
+    }
+
+    #[test]
+    fn test_while_iteration_limit() {
+        // The criterion never becomes true, so the loop runs `max_iterations` times and then fails.
+        let mut pm = PassManager::new();
+        pm.try_push_while(
+            Task::Transformation(AddOne.into_pass()),
+            AtLeast(u32::MAX),
+            5,
+        )
+        .unwrap();
+
+        let e = pm.run::<MyUint, MyUint>(MyUint(4)).unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("loop body ran 5 times without the exit criterion being met"),
+            "{:?}",
+            e
+        );
+    }
+
+    #[test]
+    fn test_while_predicate_error_stops_the_loop() {
+        let mut pm = PassManager::new();
+        pm.try_push_while(
+            Task::Transformation(AddOne.into_pass()),
+            |ir: &MyUint, _: &PassContext| {
+                if ir.0 > 6 {
+                    return Err(anyhow!("ran away"));
+                }
+                Ok(false)
+            },
+            100,
+        )
+        .unwrap();
+
+        let e = pm.run::<MyUint, MyUint>(MyUint(4)).unwrap_err();
+        assert!(e.to_string().contains("ran away"), "{:?}", e);
+    }
+
+    #[test]
+    fn test_while_until_stable() {
+        // `WriteToContext` clears `ir_modified`, so the body runs exactly once before `UntilStable`
+        // reports that the loop should stop.
+        let mut pm = PassManager::new();
+        pm.try_push_while::<MyUint>(
+            Task::Transformation(WriteToContext.into_pass()),
+            UntilStable,
+            100,
+        )
+        .unwrap();
+
+        let (out, context) = pm.run::<MyUint, MyUint>(MyUint(4)).unwrap();
+        assert_eq!(out.0, 4);
+        let MyUint(snapshot) = *context.get("snapshot").unwrap().downcast_ref().unwrap();
+        assert_eq!(snapshot, 4);
+    }
+
+    #[test]
+    fn test_while_rejects_incompatible_body() {
+        let mut pm = PassManager::new();
+        // `LowerToInt` maps `MyUint -> MyInt`, so it cannot be the body of a while task.
+        let (body, err) = pm
+            .try_push_while(
+                Task::Transformation(LowerToInt.into_pass()),
+                AtLeast(10),
+                100,
+            )
+            .unwrap_err();
+        assert!(matches!(body, Task::Transformation(_)));
+        assert!(matches!(err, TaskAppendError::Task(TaskTypeError::Loop { .. })));
     }
 }

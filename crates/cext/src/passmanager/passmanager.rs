@@ -13,7 +13,7 @@
 use std::ffi::c_void;
 use std::ptr;
 
-use super::{CPass, CompilationError, IrHandle};
+use super::{CPass, CPredicate, CompilationError, IrHandle};
 use crate::ExitCode;
 use crate::pointers::{ExposesOwnedPointers, expose_by_box};
 use anyhow::anyhow;
@@ -74,6 +74,52 @@ pub unsafe extern "C" fn qk_passmanager_push_pass(
     match pm.try_push_task(Task::Transformation(pass as Box<dyn Pass>)) {
         Ok(()) => ExitCode::Success,
         Err(_) => ExitCode::IncompatibleTypes,
+    }
+}
+
+/// @ingroup pass-manager
+/// Push a "while" task onto the pass manager, that runs `body` until `predicate` says to stop.
+///
+/// The predicate is evaluated before each run of the body, so a body that immediately satisfies the
+/// predicate runs zero times.  If the body runs `max_iterations` times without the predicate
+/// being satisfied, the pass-manager run fails with an iteration-limit error.
+///
+/// @param pm A borrowed pointer to the pass manager.
+/// @param body An owned pass to use as the loop body.  This steals ownership of the given pass.
+/// @param predicate An owned predicate that controls the loop.  This steals ownership of the given
+///     predicate.
+/// @param max_iterations The maximum number of times the body is allowed to run.
+///
+/// @return `QkExitCode_Success` if the task was added successfully, or
+///     `QkExitCode_IncompatibleTypes` if the task could not be added because its expected IR types
+///     do not match the pipeline's expectation.
+///
+/// # Safety
+///
+/// Behavior is undefined if any of the following are violated:
+///
+/// * `pm` points to a valid `QkPassManager`
+/// * `body` points to an owned `QkPass` instance.
+/// * `predicate` points to an owned `QkPredicate` instance.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn qk_passmanager_push_while(
+    pm: *mut PassManager,
+    body: *mut CPass,
+    predicate: *mut CPredicate,
+    max_iterations: usize,
+) -> ExitCode {
+    // SAFETY: per documentation, `pm` points to a valid `PassManager`.
+    let pm = unsafe { &mut *pm };
+    // SAFETY: per documentation, `body` points to a valid owned `CPass`, and `predicate` to a valid
+    // owned `CPredicate`.
+    let (body, predicate) = unsafe { (CPass::steal(body), CPredicate::steal(predicate)) };
+    let body = Task::Transformation(body as Box<dyn Pass>);
+    match Task::while_(body, predicate.0, max_iterations) {
+        Ok(task) => match pm.try_push_task(task) {
+            Ok(()) => ExitCode::Success,
+            Err(_) => ExitCode::IncompatibleTypes,
+        },
+        Err((_, _)) => ExitCode::IncompatibleTypes,
     }
 }
 

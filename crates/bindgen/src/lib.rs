@@ -93,6 +93,8 @@ pub static EXPORT_INCLUDE: &[&str] = &[
     "IrSlot",
     "PassContext",
     "PassSlot",
+    "PredicateBuiltin",
+    "PredicateSlot",
     "VtableEntry",
 ];
 pub static EXPORT_RENAME: &[(&str, &str)] = &[
@@ -114,6 +116,7 @@ pub static EXPORT_RENAME: &[(&str, &str)] = &[
     ("CircuitData", "Circuit"),
     ("DAGCircuit", "Dag"),
     ("CPass", "Pass"),
+    ("CPredicate", "Predicate"),
     ("SparseObservable", "Obs"),
     ("StandardGate", "Gate"),
     // Classical expression types

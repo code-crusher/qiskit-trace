@@ -13,6 +13,7 @@
 mod error;
 mod ir;
 mod pass;
+mod predicate;
 // `qiskit-passmanager` is responsible for all the PM infrastructure, including passes and IRs, so
 // its corresponding `cext` module mirrors it.
 #[expect(clippy::module_inception)]
@@ -22,3 +23,4 @@ pub use error::*;
 pub use ir::*;
 pub use pass::*;
 pub use passmanager::*;
+pub use predicate::*;

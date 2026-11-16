@@ -15,7 +15,16 @@ use std::{fmt, iter, slice};
 use thiserror::Error;
 
 use crate::pass::Pass;
+use crate::predicate::Predicate;
 use qiskit_util::dyn_types::DynTypeId;
+
+// There is no `fmt::Debug` implementation of `dyn Predicate`, but the objects we want to debug-print
+// have human-readable names, so mirror the behaviour of `dyn Pass`.
+impl fmt::Debug for dyn Predicate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.name().fmt(f)
+    }
+}
 
 /// A task in Qiskit's compiler framework.
 ///
@@ -30,7 +39,7 @@ use qiskit_util::dyn_types::DynTypeId;
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Task {
-    // TODO Add Loop and Switch with conditions that can be set from Python/C and
+    // TODO Add Switch with conditions that can be set from Python/C and
     // proper error handlings that occur during the condition evaluation.
     /// A single pass.
     Transformation(Box<dyn Pass>),
@@ -38,15 +47,68 @@ pub enum Task {
     Sequence(Vec<Task>),
     /// A sequence of named tasks.
     Stages(Vec<(String, Task)>),
+    /// A task run repeatedly until an exit criterion is met.
+    ///
+    /// The criterion is evaluated before each run of `body`, so the body may run zero times.  The
+    /// body must map from an IR type to the same type, and the criterion reads the same type.
+    While {
+        body: Box<Task>,
+        criterion: Box<dyn Predicate>,
+        max_iterations: usize,
+    },
 }
 
 impl Task {
+    /// Try to build a task that runs `body` until `criterion` says to stop.
+    ///
+    /// The criterion is evaluated before each run of `body`, and the loop fails with
+    /// [`PassError::IterationLimit`](crate::PassError::IterationLimit) if `body` would run more than
+    /// `max_iterations` times.
+    ///
+    /// Fails, returning `body` back to the caller along with the reason, if `body` does not have
+    /// equal input and output IR types, or if `criterion` reads a different IR type than `body`
+    /// accepts.
+    pub fn while_(
+        body: Task,
+        criterion: Box<dyn Predicate>,
+        max_iterations: usize,
+    ) -> Result<Self, (Task, TaskTypeError)> {
+        // An empty body has no types to disagree with, so it is admitted; the loop is then a no-op
+        // that runs until the criterion says to stop.
+        if let Some([in_, out]) = body.io_types() {
+            if in_ != out {
+                let ends = Box::new([
+                    TaskEndpoint::new(&body, &[], Side::Output, out),
+                    TaskEndpoint::new(&body, &[], Side::Input, in_),
+                ]);
+                return Err((body, TaskTypeError::Loop { ends }));
+            }
+            if in_ != criterion.ir_id() {
+                let ends = Box::new([
+                    TaskEndpoint::from_tasklike(
+                        TaskKind::While(criterion.name().to_owned()),
+                        Side::Input,
+                        criterion.ir_id(),
+                    ),
+                    TaskEndpoint::new(&body, &[], Side::Input, in_),
+                ]);
+                return Err((body, TaskTypeError::Loop { ends }));
+            }
+        }
+        Ok(Task::While {
+            body: Box::new(body),
+            criterion,
+            max_iterations,
+        })
+    }
+
     /// Return the input and output IR types, or `None` if not defined.
     pub fn io_types(&self) -> Option<[DynTypeId<'_>; 2]> {
         match self {
             Task::Transformation(pass) => Some([pass.ir_id_in(), pass.ir_id_out()]),
             Task::Sequence(tasks) => sequence_io_types(tasks.iter()),
             Task::Stages(stages) => sequence_io_types(stages.iter().map(|(_name, task)| task)),
+            Task::While { body, .. } => body.io_types(),
         }
     }
 
@@ -63,6 +125,7 @@ impl Task {
             Task::Transformation(pass) => TaskKind::Transformation(pass.name().to_owned()),
             Task::Sequence(_) => TaskKind::Sequence,
             Task::Stages(_) => TaskKind::Stages,
+            Task::While { criterion, .. } => TaskKind::While(criterion.name().to_owned()),
         }
     }
 
@@ -72,6 +135,7 @@ impl Task {
             Task::Transformation(_) => Children::None,
             Task::Sequence(tasks) => Children::Sequence(tasks.iter().enumerate()),
             Task::Stages(stages) => Children::Stages(stages.iter()),
+            Task::While { body, .. } => Children::While(body.as_ref()),
         }
     }
 
@@ -84,7 +148,7 @@ impl Task {
     fn origin_child(&self, side: Side) -> Option<(SegmentRef<'_>, &Task)> {
         match self {
             Task::Transformation(_) => None,
-            Task::Sequence(_) | Task::Stages(_) => {
+            Task::Sequence(_) | Task::Stages(_) | Task::While { .. } => {
                 let mut typed = self
                     .children()
                     .filter(|(_, task)| task.io_types().is_some());
@@ -102,6 +166,7 @@ enum Children<'a> {
     None,
     Sequence(iter::Enumerate<slice::Iter<'a, Task>>),
     Stages(slice::Iter<'a, (String, Task)>),
+    While(&'a Task),
 }
 impl<'a> Iterator for Children<'a> {
     type Item = (SegmentRef<'a>, &'a Task);
@@ -115,6 +180,11 @@ impl<'a> Iterator for Children<'a> {
             Self::Stages(stages) => stages
                 .next()
                 .map(|(name, task)| (SegmentRef::Stage(name), task)),
+            Self::While(body) => {
+                let body = *body;
+                *self = Children::None;
+                Some((SegmentRef::Index(0), body))
+            }
         }
     }
 }
@@ -153,7 +223,38 @@ fn validate<'a>(task: &'a Task, path: &mut Vec<SegmentRef<'a>>) -> Result<(), Ta
     match task {
         Task::Transformation(_) => Ok(()),
         Task::Sequence(_) | Task::Stages(_) => validate_sequence(task, path),
+        Task::While { body, .. } => validate_while(body, path),
     }
+}
+
+/// Validate the body of a [`Task::While`], including that it closes the loop.
+///
+/// The body of a while task must map from an IR type to the same type, since the loop feeds the
+/// body's output back into its input.  The criterion's type is enforced at construction time by
+/// [`Task::while_`], so it is not re-checked here.
+fn validate_while<'a>(
+    body: &'a Task,
+    path: &mut Vec<SegmentRef<'a>>,
+) -> Result<(), TaskTypeError> {
+    path.push(SegmentRef::Index(0));
+    validate(body, path)?;
+    path.pop();
+
+    let Some([input, output]) = body.io_types() else {
+        // An empty body has no types to disagree with, so the loop is a no-op until the criterion
+        // says to stop.
+        return Ok(());
+    };
+    if input != output {
+        path.push(SegmentRef::Index(0));
+        let output = TaskEndpoint::new(body, path, Side::Output, output);
+        *path.last_mut().expect("just pushed") = SegmentRef::Index(0);
+        let input = TaskEndpoint::new(body, path, Side::Input, input);
+        return Err(TaskTypeError::Loop {
+            ends: Box::new([output, input]),
+        });
+    }
+    Ok(())
 }
 
 /// Validate a task whose children run in order.
@@ -230,6 +331,7 @@ pub enum TaskKind {
     Transformation(String),
     Sequence,
     Stages,
+    While(String),
 }
 impl fmt::Display for TaskKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -237,6 +339,7 @@ impl fmt::Display for TaskKind {
             Self::Transformation(name) => write!(f, "the pass '{}'", name.escape_debug()),
             Self::Sequence => f.write_str("the sequence"),
             Self::Stages => f.write_str("the stages"),
+            Self::While(name) => write!(f, "the while task with criterion '{}'", name.escape_debug()),
         }
     }
 }
@@ -312,6 +415,18 @@ impl TaskEndpoint {
             ty: ty.short_describe().to_owned(),
         }
     }
+
+    /// Create an endpoint for an object that is not a [`Task`], such as a predicate.
+    fn from_tasklike(kind: TaskKind, side: Side, ty: DynTypeId<'_>) -> Self {
+        Self {
+            task: TaskRef {
+                path: Vec::new(),
+                kind,
+            },
+            side,
+            ty: ty.short_describe().to_owned(),
+        }
+    }
 }
 impl fmt::Display for TaskEndpoint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -329,6 +444,9 @@ pub enum TaskTypeError {
     /// them, for example. They may point to culprits at different levels of nesting.
     #[error("{}, but {}", ends[0], ends[1])]
     Sequence { ends: Box<[TaskEndpoint; 2]> },
+    /// The body of a loop task does not map from an IR type to itself.
+    #[error("{}, but {}", ends[0], ends[1])]
+    Loop { ends: Box<[TaskEndpoint; 2]> },
 }
 
 /// A [Task] can not be appended to a [`PassManager`](crate::PassManager).
@@ -377,13 +495,16 @@ impl TaskAppendError {
 #[cfg(test)]
 mod test {
     use crate::pass::StaticPass;
-    use crate::{IR, PassContext, Task, TaskKind, TaskPathSegment, TaskTypeError};
+    use crate::predicate::StaticPredicate;
+    use crate::{IR, PassContext, Side, Task, TaskKind, TaskPathSegment, TaskTypeError};
     use anyhow::anyhow;
     use qiskit_util::{dyn_types::DynTypeId, static_dyn_typed};
 
     /// The paths and types of the two ends of a [`TaskTypeError::Sequence`].
     fn sequence_ends(err: &TaskTypeError) -> [(&[TaskPathSegment], &str); 2] {
-        let TaskTypeError::Sequence { ends } = err;
+        let TaskTypeError::Sequence { ends } = err else {
+            panic!("expected a sequence mismatch, got {err}");
+        };
         ends.each_ref().map(|end| (end.task().path(), end.ty()))
     }
 
@@ -621,7 +742,9 @@ mod test {
             Task::Transformation(AddOne.into_pass()),
         ]);
         let err = seq.validate().unwrap_err();
-        let TaskTypeError::Sequence { ends } = &err;
+        let TaskTypeError::Sequence { ends } = &err else {
+            panic!("expected a sequence mismatch, got {err}");
+        };
         let [output, input] = &**ends;
         let TaskKind::Transformation(output_name) = output.task().kind() else {
             panic!("expected a pass");
@@ -658,5 +781,80 @@ mod test {
             Task::Transformation(LowerToInt.into_pass()),
         ]);
         assert!(seq.validate().is_ok());
+    }
+
+    struct AtLeast(u32);
+    impl StaticPredicate<MyUint> for AtLeast {
+        fn evaluate(&self, ir: &MyUint, _context: &PassContext) -> anyhow::Result<bool> {
+            Ok(ir.0 >= self.0)
+        }
+    }
+
+    struct AtLeastInt(i32);
+    impl StaticPredicate<MyInt> for AtLeastInt {
+        fn evaluate(&self, ir: &MyInt, _context: &PassContext) -> anyhow::Result<bool> {
+            Ok(ir.0 >= self.0)
+        }
+    }
+
+    #[test]
+    fn test_while_io_types() {
+        let uint_ty = DynTypeId::of::<MyUint>();
+        let body = Task::Transformation(AddOne.into_pass());
+        let task = Task::while_(body, AtLeast(10).into_predicate(), 100).unwrap();
+        assert_eq!(task.io_types().unwrap(), [uint_ty, uint_ty]);
+    }
+
+    #[test]
+    fn test_while_accepts_valid_body_and_criterion() {
+        let body = Task::Transformation(AddOne.into_pass());
+        let task = Task::while_(body, AtLeast(10).into_predicate(), 100).unwrap();
+        assert!(task.validate().is_ok());
+        assert!(matches!(task.kind(), TaskKind::While(_)));
+    }
+
+    #[test]
+    fn test_while_rejects_body_with_mismatched_ir_types() {
+        let body = Task::Transformation(LowerToInt.into_pass());
+        let (body, err) = Task::while_(body, AtLeast(10).into_predicate(), 100).unwrap_err();
+        assert!(matches!(body, Task::Transformation(_)));
+        let TaskTypeError::Loop { ends } = &err else {
+            panic!("expected a loop mismatch, got {err}");
+        };
+        assert_eq!(ends[0].side(), Side::Output);
+        assert_eq!(ends[1].side(), Side::Input);
+        assert!(ends[0].ty() == "MyInt" && ends[1].ty() == "MyUint", "{err}");
+    }
+
+    #[test]
+    fn test_while_rejects_criterion_with_mismatched_ir_type() {
+        // `LowerToInt` reads `MyUint`, but `LowerToInt` as a body maps `MyUint -> MyInt`, which is
+        // rejected before the criterion is even considered.
+        let body = Task::Transformation(LowerToInt.into_pass());
+        assert!(Task::while_(body, AtLeast(10).into_predicate(), 100).is_err());
+
+        // A body that reads `MyUint` with a criterion that reads `MyInt` is also rejected.
+        let body = Task::Transformation(AddOne.into_pass());
+        let criterion = AtLeastInt(10);
+        let (_body, err) = Task::while_(body, criterion.into_predicate(), 100).unwrap_err();
+        assert!(matches!(err, TaskTypeError::Loop { .. }), "{err}");
+    }
+
+    #[test]
+    fn test_while_validate_reports_loop_mismatch() {
+        // A while task whose body does not close the loop should fail validation even if it was
+        // constructed by hand (bypassing `Task::while_`).
+        let task = Task::While {
+            body: Box::new(Task::Transformation(LowerToInt.into_pass())),
+            criterion: AtLeast(10).into_predicate(),
+            max_iterations: 100,
+        };
+        let err = task.validate().unwrap_err();
+        assert!(matches!(err, TaskTypeError::Loop { .. }), "{err}");
+        assert!(
+            err.to_string().contains("outputs MyInt")
+                && err.to_string().contains("takes MyUint"),
+            "{err}"
+        );
     }
 }
