@@ -54,12 +54,15 @@ pub use crate::standard_gate::*;
 /// Represent all possible parameters that can be used on an operation
 /// for Qiskit.
 ///
-/// This enumeration has 3(+1) variants:
+/// This enumeration has 4(+1) variants:
 /// - [`Param::ParameterExpression`]: Representing an unbound parameter.
 /// - [`Param::Float`]: Represents a bound parameter with a real value
 ///   associated with it.
 /// - [`Param::Int`]: Used exclusively to represent a duration in terms of
 ///   `Dt` for a [`StandardInstruction::Delay`].
+/// - [`Param::Expr`]: Represents a runtime classical expression, such as
+///   the two values of a [`StandardInstruction::Store`] or the duration of
+///   a [`StandardInstruction::Delay`] with a unit of `Expr`.
 /// - [`Param::Obj`]: (only used when python is involved). Represents
 ///   parameters that are historically not representable in Rust.
 #[derive(Clone, Debug)]
@@ -72,6 +75,14 @@ pub enum Param {
     /// Used for parameters that must only be integers.  For example, the
     /// `Delay::DT` unit requires this, but gate angles must use `Float`.
     Int(i64),
+    /// Represents a runtime classical expression.  In contrast to
+    /// [`Param::ParameterExpression`], these are "typed" values that are
+    /// evaluated by the runtime itself, rather than being compile-time
+    /// symbolic values that must be resolved by `assign_parameters` before
+    /// execution.  These are used for the two parameters of a
+    /// [`StandardInstruction::Store`], and the duration of a
+    /// [`StandardInstruction::Delay`] whose unit is `Expr`.
+    Expr(Arc<expr::Expr>),
     /// Represents a bound parameter with a real value associated with it.
     /// This, alongside [`Param::ParameterExpression`], is the most common
     /// way a parameter is associated with a [`StandardGate`] in Qiskit,
@@ -96,6 +107,7 @@ impl<'py> IntoPyObject<'py> for &Param {
                 let py_expr = PyParameterExpression::from(expr.as_ref().clone());
                 py_expr.coerce_into_py(py)?.into_bound_py_any(py)
             }
+            Param::Expr(expr) => expr.as_ref().clone().into_bound_py_any(py),
             Param::Int(value) => value.into_bound_py_any(py),
         }
     }
@@ -163,6 +175,23 @@ impl Param {
             [Self::Int(int), Self::Obj(obj)] | [Self::Obj(obj), Self::Int(int)] => {
                 Python::attach(|py| obj.bind(py).eq(int))
             }
+            [Self::Expr(a), Self::Expr(b)] => Ok(a == b),
+            // A Python-space object that wraps an `Expr` compares equal to the Rust-space
+            // `Param::Expr` if the underlying expressions are equal.
+            [Self::Expr(a), Self::Obj(b)] | [Self::Obj(b), Self::Expr(a)] => {
+                Python::attach(|py| {
+                    let Ok(b) = b.bind(py).extract::<expr::Expr>() else {
+                        return Ok(false);
+                    };
+                    Ok(a.as_ref() == &b)
+                })
+            }
+            [Self::Expr(_), Self::Float(_)]
+            | [Self::Float(_), Self::Expr(_)]
+            | [Self::Expr(_), Self::Int(_)]
+            | [Self::Int(_), Self::Expr(_)]
+            | [Self::Expr(_), Self::ParameterExpression(_)]
+            | [Self::ParameterExpression(_), Self::Expr(_)] => Ok(false),
         }
     }
 
@@ -178,7 +207,9 @@ impl Param {
     /// Get an iterator over any `Symbol` instances tracked within this `Param`.
     pub fn iter_parameters(&self) -> PyResult<Box<dyn Iterator<Item = Symbol> + '_>> {
         match self {
-            Param::Float(_) | Param::Int(_) => Ok(Box::new(::std::iter::empty())),
+            Param::Float(_) | Param::Int(_) | Param::Expr(_) => {
+                Ok(Box::new(::std::iter::empty()))
+            }
             Param::ParameterExpression(expr) => Ok(Box::new(expr.iter_symbols().cloned())),
             Param::Obj(obj) => {
                 Python::attach(|py| -> PyResult<Box<dyn Iterator<Item = Symbol>>> {
@@ -295,7 +326,7 @@ impl Param {
         } else {
             match unit {
                 DelayUnit::DT => Ok(Param::Int(ob.extract()?)),
-                DelayUnit::EXPR => Ok(Param::Obj(ob.as_any().clone().unbind())),
+                DelayUnit::EXPR => Ok(Param::Expr(Arc::new(ob.extract::<expr::Expr>()?))),
                 _ => Ok(Param::Float(ob.extract()?)),
             }
         }
@@ -308,6 +339,7 @@ impl Param {
             Param::Float(float) => Param::Float(*float),
             Param::Obj(obj) => Param::Obj(obj.clone_ref(py)),
             Param::Int(int) => Param::Int(*int),
+            Param::Expr(expr) => Param::Expr(expr.clone()),
         }
     }
 
@@ -318,6 +350,9 @@ impl Param {
     ) -> PyResult<Self> {
         match self {
             Param::Float(f) => Ok(Param::Float(*f)),
+            // `Expr` nodes are immutable and Rust-native, so they need no Python-space
+            // deep copying; cloning the handle is enough.
+            Param::Expr(expr) => Ok(Param::Expr(expr.clone())),
             _ => Self::extract_no_coerce(
                 imports::DEEPCOPY
                     .get_bound(py)
@@ -368,7 +403,6 @@ pub enum OperationRef<'a> {
     PauliProductMeasurement(&'a PauliProductMeasurement),
     PauliProductRotation(&'a PauliProductRotation),
     CustomOperation(&'a dyn CustomOperation),
-    Store(&'a Store),
 }
 
 impl Operation for OperationRef<'_> {
@@ -383,7 +417,6 @@ impl Operation for OperationRef<'_> {
             Self::PauliProductMeasurement(ppm) => ppm.name(),
             Self::PauliProductRotation(rotation) => rotation.name(),
             Self::CustomOperation(operation) => operation.name(),
-            Self::Store(store) => store.name(),
         }
     }
     #[inline]
@@ -397,7 +430,6 @@ impl Operation for OperationRef<'_> {
             Self::PauliProductMeasurement(ppm) => ppm.num_qubits(),
             Self::PauliProductRotation(rotation) => rotation.num_qubits(),
             Self::CustomOperation(operation) => operation.num_qubits(),
-            Self::Store(store) => store.num_qubits(),
         }
     }
     #[inline]
@@ -411,7 +443,6 @@ impl Operation for OperationRef<'_> {
             Self::PauliProductMeasurement(ppm) => ppm.num_clbits(),
             Self::PauliProductRotation(rotation) => rotation.num_clbits(),
             Self::CustomOperation(operation) => operation.num_clbits(),
-            Self::Store(store) => store.num_clbits(),
         }
     }
     #[inline]
@@ -425,7 +456,6 @@ impl Operation for OperationRef<'_> {
             Self::PauliProductMeasurement(ppm) => ppm.num_params(),
             Self::PauliProductRotation(rotation) => rotation.num_params(),
             Self::CustomOperation(operation) => operation.num_params(),
-            Self::Store(store) => store.num_params(),
         }
     }
     #[inline]
@@ -439,7 +469,6 @@ impl Operation for OperationRef<'_> {
             Self::PauliProductMeasurement(ppm) => ppm.directive(),
             Self::PauliProductRotation(rotation) => rotation.directive(),
             Self::CustomOperation(operation) => operation.directive(),
-            Self::Store(store) => store.directive(),
         }
     }
 }
@@ -1150,13 +1179,14 @@ pub enum StandardInstructionType {
     Delay = 1,
     Measure = 2,
     Reset = 3,
+    Store = 4,
 }
 
 unsafe impl ::bytemuck::CheckedBitPattern for StandardInstructionType {
     type Bits = u8;
 
     fn is_valid_bit_pattern(bits: &Self::Bits) -> bool {
-        *bits < 4
+        *bits < 5
     }
 }
 unsafe impl ::bytemuck::NoUninit for StandardInstructionType {}
@@ -1168,6 +1198,7 @@ impl StandardInstructionType {
             StandardInstructionType::Delay => "delay",
             StandardInstructionType::Measure => "measure",
             StandardInstructionType::Reset => "reset",
+            StandardInstructionType::Store => "store",
         }
     }
 }
@@ -1192,6 +1223,11 @@ pub enum StandardInstruction {
     Delay(DelayUnit),
     Measure,
     Reset,
+    /// A manual storage of some classical value to a classical memory
+    /// location.  The lvalue and rvalue are stored as the first and second
+    /// entries (respectively) of the containing instruction's parameters, as
+    /// [`Param::Expr`] instances.
+    Store,
 }
 
 // This must be kept up-to-date with `StandardInstruction` when adding or removing
@@ -1199,7 +1235,7 @@ pub enum StandardInstruction {
 //
 // Remove this when std::mem::variant_count() is stabilized (see
 // https://github.com/rust-lang/rust/issues/73662 )
-pub const STANDARD_INSTRUCTION_SIZE: usize = 4;
+pub const STANDARD_INSTRUCTION_SIZE: usize = 5;
 
 impl Operation for StandardInstruction {
     fn name(&self) -> &str {
@@ -1208,6 +1244,7 @@ impl Operation for StandardInstruction {
             StandardInstruction::Delay(_) => StandardInstructionType::Delay.as_str(),
             StandardInstruction::Measure => StandardInstructionType::Measure.as_str(),
             StandardInstruction::Reset => StandardInstructionType::Reset.as_str(),
+            StandardInstruction::Store => StandardInstructionType::Store.as_str(),
         }
     }
 
@@ -1217,6 +1254,7 @@ impl Operation for StandardInstruction {
             StandardInstruction::Delay(_) => 1,
             StandardInstruction::Measure => 1,
             StandardInstruction::Reset => 1,
+            StandardInstruction::Store => 0,
         }
     }
 
@@ -1226,12 +1264,14 @@ impl Operation for StandardInstruction {
             StandardInstruction::Delay(_) => 0,
             StandardInstruction::Measure => 1,
             StandardInstruction::Reset => 0,
+            StandardInstruction::Store => 0,
         }
     }
 
     fn num_params(&self) -> u32 {
         match self {
             StandardInstruction::Delay(_) => 1,
+            StandardInstruction::Store => 2,
             _ => 0,
         }
     }
@@ -1242,6 +1282,7 @@ impl Operation for StandardInstruction {
             StandardInstruction::Delay(_) => false,
             StandardInstruction::Measure => false,
             StandardInstruction::Reset => false,
+            StandardInstruction::Store => true,
         }
     }
 }
@@ -1253,7 +1294,8 @@ impl StandardInstruction {
         params: Option<SmallVec<[Param; 3]>>,
         label: Option<&str>,
     ) -> PyResult<Py<PyAny>> {
-        let mut params = params.into_iter().flatten();
+        let params = params.unwrap_or_default();
+        let mut params = params.iter();
         let kwargs = label
             .map(|label| [("label", label.into_py_any(py)?)].into_py_dict(py))
             .transpose()?;
@@ -1271,9 +1313,38 @@ impl StandardInstruction {
                 imports::MEASURE.get_bound(py).call((), kwargs.as_ref())?
             }
             StandardInstruction::Reset => imports::RESET.get_bound(py).call((), kwargs.as_ref())?,
+            StandardInstruction::Store => {
+                // The lvalue and rvalue are stored as the instruction's first and second
+                // parameters, respectively.
+                let (lvalue, rvalue) = Self::store_exprs(params.as_slice())?;
+                imports::STORE
+                    .get_bound(py)
+                    .call((lvalue.clone(), rvalue.clone(),), kwargs.as_ref())?
+            }
         };
 
         Ok(out.unbind())
+    }
+
+    /// Get the lvalue and rvalue of a `Store` operation from its parameters.
+    ///
+    /// # Panics
+    ///
+    /// This panics if the parameters are not the two [`Param::Expr`] values that a
+    /// well-formed `Store` instruction carries; the caller is responsible for knowing
+    /// that the parameters belong to a `Store`.
+    fn store_exprs(params: &[Param]) -> PyResult<(&expr::Expr, &expr::Expr)> {
+        let [lvalue, rvalue] = params else {
+            return Err(PyValueError::new_err(
+                "a Store instruction must have exactly two parameters",
+            ));
+        };
+        match (lvalue, rvalue) {
+            (Param::Expr(lvalue), Param::Expr(rvalue)) => Ok((lvalue, rvalue)),
+            _ => Err(PyValueError::new_err(
+                "the parameters of a Store instruction must be expressions",
+            )),
+        }
     }
 }
 
@@ -1285,6 +1356,7 @@ pub fn clone_param(param: &Param) -> Param {
         Param::ParameterExpression(theta) => Param::ParameterExpression(theta.clone()),
         Param::Obj(_) => unreachable!(),
         Param::Int(int) => Param::Int(*int),
+        Param::Expr(expr) => Param::Expr(expr.clone()),
     }
 }
 
@@ -1305,7 +1377,7 @@ pub fn multiply_param(param: &Param, mult: f64) -> Param {
                 theta.mul(&ParameterExpression::from_f64(mult)).unwrap(),
             ))
         }
-        Param::Obj(_) | Param::Int(_) => {
+        Param::Obj(_) | Param::Int(_) | Param::Expr(_) => {
             panic!("Unsupported multiplication of a Param::Obj.")
         }
     }
@@ -1350,7 +1422,7 @@ pub fn add_param(param: &Param, summand: f64) -> Param {
             // safe to unwrap as addition with float does not have name conflicts
             Arc::new(theta.add(&ParameterExpression::from_f64(summand)).unwrap()),
         ),
-        Param::Obj(_) | Param::Int(_) => {
+        Param::Obj(_) | Param::Int(_) | Param::Expr(_) => {
             panic!("Unsupported addition of a Param::Obj or Param::Int.")
         }
     }
@@ -2044,76 +2116,6 @@ impl PartialEq for PauliProductMeasurement {
 }
 
 impl Eq for PauliProductMeasurement {}
-
-/// A manual storage of some classical value to a classical memory location
-#[derive(Debug, Clone, PartialEq)]
-pub struct Store {
-    lvalue: expr::Expr,
-    rvalue: expr::Expr,
-}
-
-impl Store {
-    pub fn create_py_op(&self, py: Python, label: Option<&str>) -> PyResult<Py<PyAny>> {
-        if let Some(label) = label {
-            Ok(imports::STORE
-                .get_bound(py)
-                .call1((self.lvalue.clone(), self.rvalue.clone(), label))?
-                .unbind())
-        } else {
-            Ok(imports::STORE
-                .get_bound(py)
-                .call1((self.lvalue.clone(), self.rvalue.clone()))?
-                .unbind())
-        }
-    }
-
-    /// Get an immutable borrow to the lvalue of this Store operation
-    pub fn lvalue(&self) -> &expr::Expr {
-        &self.lvalue
-    }
-
-    /// Get an immutable borrow to the rvalue of this Store operation
-    pub fn rvalue(&self) -> &expr::Expr {
-        &self.rvalue
-    }
-
-    /// Create a new Store operation
-    ///
-    /// The `lvalue` argument must be a valid lvalue (typically a var)
-    /// and the `rvalue` argument must be a valid value for that
-    /// storage location. This is a raw interface that has no input
-    /// checking done by this function to validate these constraints.
-    /// If they are violated you will create an invalid Store operation
-    /// that will potentially corrupt the [`CircuitData`] or [`DAGCircuit`]
-    /// objects when they are added. This is primarily intended to be used
-    /// when created the rust source of truth from a user created object
-    /// in Python (which has the input validation).
-    pub fn new(lvalue: expr::Expr, rvalue: expr::Expr) -> Self {
-        Self { lvalue, rvalue }
-    }
-}
-
-impl Operation for Store {
-    fn name(&self) -> &str {
-        "store"
-    }
-
-    fn num_qubits(&self) -> u32 {
-        0
-    }
-
-    fn num_clbits(&self) -> u32 {
-        0
-    }
-
-    fn num_params(&self) -> u32 {
-        0
-    }
-
-    fn directive(&self) -> bool {
-        true
-    }
-}
 
 /// Private module with especific traits that allow for the implementation
 /// of non dyn-compatible traits for [`CustomOperation`]. Namely [`PartialEq`]

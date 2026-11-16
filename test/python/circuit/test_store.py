@@ -11,10 +11,15 @@
 # that they have been altered from the originals.
 
 
+import copy
+import io
+import pickle
 from test import QiskitTestCase
 
 from qiskit.circuit import Store, Clbit, CircuitError, QuantumCircuit, ClassicalRegister
+from qiskit._accelerate.circuit import StandardInstructionType
 from qiskit.circuit.classical import expr, types
+from qiskit.qpy import QPY_VERSION, dump, load
 
 
 class TestStoreInstruction(QiskitTestCase):
@@ -229,3 +234,54 @@ class TestStoreCircuit(QiskitTestCase):
         qc = QuantumCircuit(inputs=[lvalue, rvalue])
         with self.assertRaisesRegex(CircuitError, "an explicit cast is required.*may be lossy"):
             qc.store(lvalue, rvalue)
+
+
+class TestStoreStandardInstruction(QiskitTestCase):
+    """Tests that `Store` is handled as a Rust-space standard instruction (gh-17001).
+
+    The lvalue and rvalue of a `Store` are stored as `Param::Expr` values in the
+    instruction's parameters, rather than as opaque Python objects, which makes `Store`
+    a `StandardInstruction` and lets it round trip through native (Python-free) paths.
+    """
+
+    def _make_circuit(self):
+        a = expr.Var.new("a", types.Bool())
+        b = expr.Var.new("b", types.Bool())
+        qc = QuantumCircuit(inputs=[a, b])
+        qc.store(a, expr.logic_or(b, True))
+        return qc, a, b
+
+    def test_is_standard_instruction(self):
+        """The Python class marks itself as a standard instruction."""
+        self.assertIs(Store._standard_instruction_type, StandardInstructionType.Store)
+
+    def test_properties_are_exprs(self):
+        """The lvalue/rvalue properties are backed by the Rust-space expression params."""
+        qc, a, b = self._make_circuit()
+        op = qc.data[0].operation
+        self.assertIs(op.lvalue, op.params[0])
+        self.assertIs(op.rvalue, op.params[1])
+
+    def test_equality_and_copy(self):
+        """Store circuits compare equal and survive copy/deepcopy/pickle."""
+        qc, _, _ = self._make_circuit()
+        self.assertEqual(qc, copy.copy(qc))
+        self.assertEqual(qc, copy.deepcopy(qc))
+        self.assertEqual(qc, pickle.loads(pickle.dumps(qc)))
+
+    def test_qpy_roundtrip(self):
+        """A Store survives a QPY round trip with its expressions intact."""
+        qc, _, _ = self._make_circuit()
+        for version in (None, 17, QPY_VERSION):
+            buf = io.BytesIO()
+            dump(qc, buf, version=version)
+            buf.seek(0)
+            loaded = load(buf)
+            self.assertEqual(len(loaded), 1)
+            self.assertEqual(loaded[0], qc)
+
+    def test_rust_space_operation_view(self):
+        """The Rust space sees Store as a StandardInstruction, not a boxed pointer op."""
+        qc, a, b = self._make_circuit()
+        # `count_ops` exercises the Rust-space operation view of each instruction.
+        self.assertEqual(qc.count_ops(), {"store": 1})

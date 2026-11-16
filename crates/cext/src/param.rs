@@ -198,6 +198,7 @@ pub unsafe extern "C" fn qk_param_str(param: *const Param) -> *mut c_char {
         Param::ParameterExpression(expr) => expr.to_string(),
         Param::Float(f) => f.to_string(),
         Param::Obj(_) => panic!("Param::Obj is not supported in the C API"),
+        Param::Expr(_) => panic!("Param::Expr is not supported in the C API"),
         Param::Int(u) => u.to_string(),
     };
     util::cstring_from_utf8_lossy(str).into_raw()
@@ -1027,6 +1028,7 @@ pub unsafe extern "C" fn qk_param_as_real(param: *const Param) -> f64 {
         },
         Param::Float(f) => *f,
         Param::Obj(_) => panic!("Param::Obj is not supported in the C API"),
+        Param::Expr(_) => panic!("Param::Expr is not supported in the C API"),
         Param::Int(u) => *u as f64, // Lossy conversion,
     }
 }
@@ -1107,6 +1109,9 @@ fn param_try_int(param: &Param) -> Option<i64> {
         },
         Param::Int(int) => Some(*int),
         Param::Float(_) => None,
+        // Runtime expressions are not compile-time values, so they never evaluate to an
+        // integer here.
+        Param::Expr(_) => None,
         Param::Obj(_) => None,
     }
 }
@@ -1144,7 +1149,7 @@ pub unsafe extern "C" fn qk_param_kind(param: *const Param) -> ParamKind {
         Param::ParameterExpression(_) => ParamKind::ParameterExpression,
         Param::Int(_) => ParamKind::Int,
         Param::Float(_) => ParamKind::Real,
-        Param::Obj(_) => ParamKind::Unknown,
+        Param::Obj(_) | Param::Expr(_) => ParamKind::Unknown,
     }
 }
 

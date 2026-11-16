@@ -518,6 +518,10 @@ impl<'a> VisualizationLayer<'a> {
                         VisualizationElement::Boxed(BoxedElement::Single(inst));
                 }
             }
+            // `Store` has no wires of its own; the Python-side drawing machinery
+            // filters it out before the layers are built, so there is nothing
+            // to place here.
+            StandardInstruction::Store => {}
         }
     }
 
@@ -1043,9 +1047,13 @@ impl TextDrawer {
                             Param::ParameterExpression(expr) => {
                                 format!("Delay({}[{}])", expr, delay_unit)
                             }
+                            Param::Expr(expr) => format!("Delay({:?}[{}])", expr, delay_unit),
                             Param::Obj(obj) => format!("Delay({:?}[{}])", obj, delay_unit), // TODO: extract the int
                         }
                     }
+                    // `Store` is not drawn on wires; use the operation name as a fallback
+                    // if it ever reaches the drawing machinery.
+                    StandardInstruction::Store => "store".to_string(),
                 }
             }
             OperationRef::StandardGate(standard_gate) => {
@@ -1089,6 +1097,7 @@ impl TextDrawer {
             OperationRef::PauliProductRotation(ppr) => match &ppr.angle {
                 Param::Float(f) => format!("PPR({})", F64UiFormatter::new(5).format_with_pi(*f)),
                 Param::ParameterExpression(e) => format!("PPR({})", e),
+                Param::Expr(e) => format!("PPR({:?})", e),
                 Param::Obj(o) => format!("PPR({:?})", o),
                 Param::Int(u) => format!("PPR({:?})", u),
             },

@@ -1287,6 +1287,12 @@ impl CircuitData {
                     let map: HashMap<&Symbol, Value> = HashMap::from([(symbol, Value::Int(*u))]);
                     expr.bind(&map, false)?
                 }
+                Param::Expr(_) => {
+                    return Err(PyTypeError::new_err(
+                        "Cannot assign an expression object to a parameter.",
+                    )
+                    .into())
+                }
             };
             // Param::from_expr() only errors in the python path when calling Python
             Ok(Param::from_expr(new_expr, coerce)?)
@@ -1330,8 +1336,7 @@ impl CircuitData {
                     | OperationRef::Unitary(_)
                     | OperationRef::PauliProductMeasurement(_)
                     | OperationRef::PauliProductRotation(_)
-                    | OperationRef::CustomOperation(_)
-                    | OperationRef::Store(_) => {
+                    | OperationRef::CustomOperation(_) => {
                         // TODO: `PauliProductRotation` actually stores a `Param` inside itself,
                         // which this code does not account for.  We most likely need to make an
                         // `OperationRefMut` in order to modify that without cloning the whole
@@ -1428,7 +1433,7 @@ impl CircuitData {
                             // All "user" operations (e.g. PyOperation) use Parameters::Param.
                             let previous_param = &previous.params_view()[parameter];
                             let new_param = match previous_param {
-                                Param::Float(_) | Param::Int(_) => inconsistent(),
+                                Param::Float(_) | Param::Int(_) | Param::Expr(_) => inconsistent(),
                                 Param::ParameterExpression(expr) => {
                                     let new_param =
                                         bind_expr(expr, &symbol, value.as_ref(), false)?;
@@ -1657,7 +1662,7 @@ impl CircuitData {
     /// Add a param to the current global phase of the circuit
     pub fn add_global_phase(&mut self, value: &Param) -> Result<(), CircuitDataError> {
         match value {
-            Param::Obj(_) => Err(CircuitDataError::InvalidGlobalPhaseType),
+            Param::Obj(_) | Param::Expr(_) => Err(CircuitDataError::InvalidGlobalPhaseType),
             _ => self.set_global_phase_param(add_global_phase(&self.global_phase, value)),
         }
     }
@@ -2592,7 +2597,6 @@ impl PyCircuitData {
                     OperationRef::CustomOperation(custom_operation) => {
                         BoxedCustomOperation::from(custom_operation.clone_dyn()).into()
                     }
-                    OperationRef::Store(store) => store.clone().into(),
                 };
                 res.data.push(PackedInstruction {
                     op: new_op,
@@ -2621,7 +2625,6 @@ impl PyCircuitData {
                     OperationRef::CustomOperation(custom_operation) => {
                         BoxedCustomOperation::from(custom_operation.clone_dyn()).into()
                     }
-                    OperationRef::Store(store) => store.clone().into(),
                 };
                 res.data.push(PackedInstruction {
                     op: new_op,

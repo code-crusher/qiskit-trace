@@ -1198,6 +1198,14 @@ impl<'a> QASM3Builder {
                     Err(_) => panic!("Failed to parse parameter value"),
                 }
             })?,
+            // A runtime classical expression can only appear as the duration of a
+            // delay with unit 'expr', which has no QASM3 duration-literal
+            // representation.
+            Param::Expr(_) => {
+                return Err(QASM3ExporterError::Error(
+                    "cannot export a delay with a runtime-expression duration".to_string(),
+                ));
+            }
         };
 
         let mut qubits = Vec::new();
@@ -1244,6 +1252,7 @@ impl<'a> QASM3Builder {
                         let name = i.to_string();
                         Expression::Parameter(Parameter { obj: name })
                     }
+                    Param::Expr(_) => panic!("runtime expressions are not supported as gate parameters"),
                 })
                 .collect::<Vec<_>>()
         } else {

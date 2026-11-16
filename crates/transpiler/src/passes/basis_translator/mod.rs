@@ -525,7 +525,6 @@ fn replace_node(
                     PauliBased::PauliProductRotation(rotation.clone()).into()
                 }
                 OperationRef::CustomOperation(_) => inner_node.op.clone(),
-                OperationRef::Store(store) => store.clone().into(),
             };
             let new_params: Option<Parameters<_>> = inner_node.params.as_deref().cloned();
             dag.apply_operation_back(
@@ -594,7 +593,6 @@ fn replace_node(
                     PauliBased::PauliProductRotation(rotation.clone()).into()
                 }
                 OperationRef::CustomOperation(_) => inner_node.op.clone(),
-                OperationRef::Store(store) => store.clone().into(),
             };
 
             let mut new_params: Option<Parameters<_>> = inner_node.params.as_deref().cloned();
@@ -648,7 +646,7 @@ fn replace_node(
             Param::Float(_) => dag
                 .add_global_phase(target_dag.global_phase())
                 .map_err(|e| BasisTranslatorError::BasisDAGCircuitError(e.to_string())),
-            Param::Obj(_) | Param::Int(_) => Ok(()),
+            Param::Obj(_) | Param::Int(_) | Param::Expr(_) => Ok(()),
         }?
     }
 
@@ -676,6 +674,11 @@ fn param_expr_assignment(
             }
             Param::Int(int) => {
                 bind_map.insert(key, Value::Int(*int));
+            }
+            // Runtime expressions are not parameterized values, so they cannot appear as a
+            // parameter assignment.
+            Param::Expr(_) => {
+                return Err(ParameterError::InvalidValue);
             }
         }
     }

@@ -35,7 +35,7 @@ use qiskit_circuit::interner::Interned;
 use qiskit_circuit::operations::{
     ArrayType, BoxDuration, CaseSpecifier, Condition, ControlFlow, ControlFlowInstruction,
     ControlFlowType, LoopParam, Param, PauliBased, PauliProductMeasurement, PauliProductRotation,
-    StandardInstruction, StandardInstructionType, Store, SwitchTarget, UnitaryGate,
+    StandardInstruction, StandardInstructionType, SwitchTarget, UnitaryGate,
 };
 use qiskit_circuit::packed_instruction::{PackedInstruction, PackedOperation};
 use qiskit_circuit::parameter::parameter_expression::ParameterExpression;
@@ -334,6 +334,9 @@ pub fn instruction_values_to_params(
                             ParameterExpression::from_arc_symbol(symbol),
                         )))
                     }
+                    // Runtime classical expressions are Rust-native, so they can be
+                    // converted directly without a round trip through Python space.
+                    GenericValue::Expression(expr) => Ok(Param::Expr(Arc::new(expr))),
                     _ => qpy_data.caller.attach(
                         "convert arbitrary parameter value to python representation",
                         |py| -> Result<_, QpyError> {
@@ -489,8 +492,15 @@ fn unpack_store(
             "could not determine expression for store instruction's rvalue".to_string(),
         ));
     };
-    let store = Store::new(lvalue, rvalue);
-    Ok((Box::new(store).into(), vec![]))
+    // The lvalue and rvalue travel as the instruction's two parameters; the
+    // standard-instruction unpacking path converts them into `Param::Expr`.
+    Ok((
+        PackedOperation::from_standard_instruction(StandardInstruction::Store),
+        vec![
+            GenericValue::Expression(lvalue),
+            GenericValue::Expression(rvalue),
+        ],
+    ))
 }
 
 fn unpack_pauli_product_measurement(

@@ -2357,6 +2357,12 @@ impl PyDAGCircuit {
                                     [StandardInstruction::Reset, StandardInstruction::Reset] => {
                                         true
                                     }
+                                    [StandardInstruction::Store, StandardInstruction::Store] => {
+                                        // The lvalue and rvalue of the stores are the
+                                        // instructions' parameters.
+                                        inst1.params_view()[0].eq(&inst2.params_view()[0])?
+                                            && inst1.params_view()[1].eq(&inst2.params_view()[1])?
+                                    }
                                     _ => false,
                                 } && check_args()),
                                 [OperationRef::PyCustom(op1), OperationRef::PyCustom(op2)] => {
@@ -2479,9 +2485,6 @@ impl PyDAGCircuit {
                                     OperationRef::PauliProductRotation(op_a),
                                     OperationRef::PauliProductRotation(op_b),
                                 ] => Ok((op_a == op_b) && check_args()),
-                                [OperationRef::Store(store_a), OperationRef::Store(store_b)] => {
-                                    Ok(store_a == store_b)
-                                }
                                 _ => Ok(false),
                             }
                         }
@@ -6381,7 +6384,8 @@ impl DAGCircuit {
     fn may_have_additional_wires(&self, instr: &PackedInstruction) -> bool {
         matches!(
             instr.op.view(),
-            OperationRef::ControlFlow(_) | OperationRef::Store(_)
+            OperationRef::ControlFlow(_)
+                | OperationRef::StandardInstruction(StandardInstruction::Store)
         )
     }
 
@@ -6466,13 +6470,18 @@ impl DAGCircuit {
                     vars.push(self.vars_stretches.vars().find(var).unwrap());
                 }
             }
-        } else if let OperationRef::Store(store) = instr.op.view() {
-            let (expr_clbits, expr_vars) = wires_from_expr(store.lvalue())?;
-            clbits.extend(expr_clbits);
-            vars.extend(expr_vars);
-            let (expr_clbits, expr_vars) = wires_from_expr(store.rvalue())?;
-            clbits.extend(expr_clbits);
-            vars.extend(expr_vars);
+        } else if let OperationRef::StandardInstruction(StandardInstruction::Store) =
+            instr.op.view()
+        {
+            // The lvalue and rvalue of a Store are stored as the first and second parameters.
+            for param in instr.params_view() {
+                let Param::Expr(expr) = param else {
+                    panic!("a Store instruction must have expression parameters");
+                };
+                let (expr_clbits, expr_vars) = wires_from_expr(expr)?;
+                clbits.extend(expr_clbits);
+                vars.extend(expr_vars);
+            }
         }
         Ok((clbits, vars))
     }
@@ -6545,7 +6554,7 @@ impl DAGCircuit {
                 &mut self.global_phase,
                 Param::ParameterExpression(angle),
             )),
-            Param::Obj(_) | Param::Int(_) => Err(DAGError::ObjGlobalPhase),
+            Param::Obj(_) | Param::Int(_) | Param::Expr(_) => Err(DAGError::ObjGlobalPhase),
         }
     }
 
@@ -7619,7 +7628,7 @@ impl DAGCircuit {
 
     pub fn add_global_phase(&mut self, value: &Param) -> Result<(), DAGError> {
         match value {
-            Param::Obj(_) => Err(DAGError::ObjGlobalPhase),
+            Param::Obj(_) | Param::Expr(_) => Err(DAGError::ObjGlobalPhase),
             _ => self
                 .set_global_phase_param(add_global_phase(&self.global_phase, value))
                 .map(|_| ()),

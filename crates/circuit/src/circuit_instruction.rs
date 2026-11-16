@@ -32,13 +32,14 @@ use crate::instruction::{Instruction, Parameters, create_py_op};
 use crate::operations::{
     ArrayType, BoxDuration, ControlFlow, ControlFlowInstruction, ControlFlowType, Operation,
     OperationRef, Param, PauliBased, PauliProductMeasurement, PauliProductRotation, PyInstruction,
-    PyOpKind, StandardGate, StandardInstruction, StandardInstructionType, Store, UnitaryGate,
+    PyOpKind, StandardGate, StandardInstruction, StandardInstructionType, UnitaryGate,
 };
 use crate::packed_instruction::PackedOperation;
 use crate::parameter::parameter_expression::ParameterExpression;
 use nalgebra::{Dyn, MatrixView2, MatrixView4};
 use num_complex::Complex64;
 use smallvec::{SmallVec, smallvec};
+use std::sync::Arc;
 
 /// A single instruction in a :class:`.QuantumCircuit`, comprised of the :attr:`operation` and
 /// various operands.
@@ -446,6 +447,7 @@ impl CircuitInstruction {
                                 }
                                 Param::Obj(right) => right.bind(py).eq(left)?,
                                 Param::Int(_) => false,
+                                Param::Expr(_) => false,
                             },
                             Param::ParameterExpression(left) => match right {
                                 Param::Float(right) => {
@@ -458,6 +460,14 @@ impl CircuitInstruction {
                                         (*right).into();
                                     left.as_ref() == &ParameterExpression::from(right_val)
                                 }
+                                Param::Expr(_) => false,
+                            },
+                            Param::Expr(left) => match right {
+                                Param::Expr(right) => left == right,
+                                // The Python object might wrap a Rust expression, in which case
+                                // its `__eq__` delegates to the underlying `Expr` comparison.
+                                Param::Obj(right) => right.bind(py).eq(left.as_ref().clone())?,
+                                _ => false,
                             },
                             Param::Obj(left) => left.bind(py).eq(right)?,
                             Param::Int(left) => match right {
@@ -469,6 +479,7 @@ impl CircuitInstruction {
                                 }
                                 Param::Obj(right) => right.bind(py).eq(left)?,
                                 Param::Int(right) => left == right,
+                                Param::Expr(_) => false,
                             },
                         };
                         if !eq {
@@ -725,6 +736,7 @@ impl<'a, 'py, T: CircuitBlock> FromPyObject<'a, 'py> for OperationFromPython<T> 
                 }
                 StandardInstructionType::Measure => StandardInstruction::Measure,
                 StandardInstructionType::Reset => StandardInstruction::Reset,
+                StandardInstructionType::Store => StandardInstruction::Store,
             };
             let operation = PackedOperation::from_standard_instruction(standard);
             let params = extract_params(operation.view(), &get_params()?)?;
@@ -936,18 +948,7 @@ impl<'a, 'py, T: CircuitBlock> FromPyObject<'a, 'py> for OperationFromPython<T> 
                 params: Some(Parameters::Params(smallvec![angle])),
                 label: extract_label()?,
             });
-        } else if ob_name == "store" {
-            let params = get_params()?;
-            let lhs: expr::Expr = params.get_item(0)?.extract()?;
-            let rhs: expr::Expr = params.get_item(1)?.extract()?;
-            let store = Box::new(Store::new(lhs, rhs));
-            return Ok(OperationFromPython {
-                operation: PackedOperation::from_store(store),
-                params: None,
-                label: extract_label()?,
-            });
         }
-
         let Some(kind) = PyOpKind::from_type(ob_type.as_borrowed())? else {
             return Err(PyTypeError::new_err(format!(
                 "invalid input: {}",
@@ -1032,6 +1033,19 @@ pub fn extract_params<T: CircuitBlock>(
                             .collect::<PyResult<_>>()?,
                     ))
                 }
+                StandardInstruction::Store => {
+                    // The lvalue and rvalue of a Store are runtime classical expressions;
+                    // store them directly in Rust space rather than as opaque Python objects.
+                    Some(Parameters::Params(
+                        params
+                            .try_iter()?
+                            .map(|p| {
+                                p?.extract::<expr::Expr>()
+                                    .map(|expr| Param::Expr(Arc::new(expr)))
+                            })
+                            .collect::<PyResult<_>>()?,
+                    ))
+                }
                 StandardInstruction::Measure => None,
                 StandardInstruction::Reset => None,
             }
@@ -1045,7 +1059,6 @@ pub fn extract_params<T: CircuitBlock>(
             let params: SmallVec<[Param; 3]> = params.extract()?;
             Some(Parameters::Params(params))
         }
-        OperationRef::Store(_) => None,
     })
 }
 

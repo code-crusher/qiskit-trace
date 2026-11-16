@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import typing
 
+from qiskit._accelerate.circuit import StandardInstructionType
+
 from .exceptions import CircuitError
 from .classical import expr, types
 from .instruction import Instruction
@@ -61,6 +63,8 @@ class Store(Instruction):
 
     # This is a compiler/backend intrinsic operation, separate to any quantum processing.
     _directive = True
+
+    _standard_instruction_type = StandardInstructionType.Store
 
     def __init__(self, lvalue: expr.Expr, rvalue: expr.Expr):
         """

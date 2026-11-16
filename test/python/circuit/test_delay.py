@@ -13,9 +13,12 @@
 
 """Test delay instruction for quantum circuits."""
 import copy
+import io
 import pickle
 
 import numpy as np
+
+from qiskit.qpy import dump, load
 
 from qiskit.circuit import Delay, Duration
 from qiskit.circuit import Parameter, ParameterVector
@@ -153,6 +156,40 @@ class TestDelayClass(QiskitTestCase):
         self.assertEqual(qc, pickle.loads(pickle.dumps(qc)))
         self.assertEqual(qc, copy.copy(qc))
         self.assertEqual(qc, copy.deepcopy(qc))
+
+    def test_delay_expr_duration_stored_as_expr_param(self):
+        """Test that a delay with an expression duration is a standard instruction.
+
+        The duration expression is stored as a Rust-space ``Param::Expr`` (gh-17001)
+        rather than as an opaque Python object, so the instruction no longer depends
+        on Python space for its data.
+        """
+        qc = QuantumCircuit(2)
+        stretch = qc.add_stretch("a")
+        qc.delay(expr.lift(Duration.us(1)), 0)
+        qc.delay(stretch, [0, 1])
+        for instruction in qc.data:
+            delay = instruction.operation
+            self.assertIsInstance(delay, Delay)
+            self.assertEqual(delay.unit, "expr")
+            self.assertIsInstance(delay.duration, expr.Expr)
+
+    def test_delay_expr_roundtrip(self):
+        """Test that delays with expression durations survive QPY round trips."""
+        qc = QuantumCircuit(2)
+        stretch = qc.add_stretch("a")
+        qc.delay(expr.lift(Duration.us(1)), 0)
+        qc.delay(stretch, [0, 1])
+
+        buf = io.BytesIO()
+        dump(qc, buf)
+        buf.seek(0)
+        loaded = load(buf)[0]
+        self.assertEqual(loaded, qc)
+        for original, roundtripped in zip(qc.data, loaded.data):
+            self.assertEqual(original.operation.unit, "expr")
+            self.assertEqual(roundtripped.operation.unit, "expr")
+            self.assertEqual(original.operation.duration, roundtripped.operation.duration)
 
 
 class TestParameterizedDelay(QiskitTestCase):

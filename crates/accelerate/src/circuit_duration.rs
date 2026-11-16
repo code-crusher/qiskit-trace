@@ -54,6 +54,11 @@ pub(crate) fn compute_estimated_duration(dag: &PyDAGCircuit, target: &Target) ->
                                             "Circuit contains parameterized delays, can't compute a duration estimate with this circuit",
                                         )),
                                         Param::Int(value) => Ok(*value as f64 * dt),
+                                        // A runtime expression is not a `dt` duration, so
+                                        // reaching this arm implies malformed data.
+                                        Param::Expr(_) => Err(QiskitError::new_err(
+                                            "Invalid type for parameter value for delay in circuit",
+                                        )),
                                     }
                                 } else {
                                     Err(QiskitError::new_err(

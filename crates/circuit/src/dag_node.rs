@@ -205,9 +205,15 @@ impl DAGOpNode {
                         [Param::Int(_), Param::Float(_)] | [Param::Float(_), Param::Int(_)] => {
                             false
                         }
+                        [Param::Expr(expr_a), Param::Expr(expr_b)] => expr_a == expr_b,
+                        // A Python-space object might wrap a Rust expression; its `__eq__`
+                        // delegates to the underlying `Expr` comparison.
                         [Param::Obj(obj_a), param_a] | [param_a, Param::Obj(obj_a)] => {
                             obj_a.bind(py).eq(param_a)?
                         }
+                        // Runtime expressions only compare equal to other expressions (or
+                        // Python objects wrapping them, handled above).
+                        [Param::Expr(_), _] | [_, Param::Expr(_)] => false,
                     };
                     if !res {
                         params_eq = false;

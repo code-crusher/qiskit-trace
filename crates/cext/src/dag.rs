@@ -1070,13 +1070,15 @@ pub unsafe extern "C" fn qk_dag_op_node_kind(dag: *const DAGCircuit, node: u32) 
             StandardInstruction::Delay(_) => COperationKind::Delay,
             StandardInstruction::Measure => COperationKind::Measure,
             StandardInstruction::Reset => COperationKind::Reset,
+            // There is no dedicated C-API kind for `Store`, so it stays in the
+            // generic "unknown" bucket (as before the `Param::Expr` migration).
+            StandardInstruction::Store => COperationKind::Unknown,
         },
         OperationRef::Unitary(_) => COperationKind::Unitary,
         OperationRef::PauliProductMeasurement(_) => COperationKind::PauliProductMeasurement,
         OperationRef::PauliProductRotation(_) => COperationKind::PauliProductRotation,
         OperationRef::ControlFlow(_) => COperationKind::ControlFlow,
         OperationRef::PyCustom(_) | OperationRef::CustomOperation(_) => COperationKind::Unknown,
-        OperationRef::Store(_) => COperationKind::Unknown,
     }
 }
 

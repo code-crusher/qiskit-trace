@@ -21,7 +21,7 @@ use crate::interner::Interned;
 use crate::operations::{
     BoxedCustomOperation, ControlFlow, ControlFlowInstruction, CustomOperation, Operation,
     OperationRef, Param, PauliBased, PyInstruction, PyOpKind, PythonOperation, StandardGate,
-    StandardInstruction, Store, UnitaryGate,
+    StandardInstruction, UnitaryGate,
 };
 use crate::{Block, Clbit, Qubit};
 use hashbrown::HashMap;
@@ -49,7 +49,6 @@ enum PackedOperationType {
     PauliBased = 4,
     ControlFlow = 5,
     Custom = 6,
-    Store = 7,
 }
 impl PackedOperationType {
     /// Get `self` as a mask that can be used as a discriminant for `PackedOperation` pointers.
@@ -63,7 +62,7 @@ unsafe impl ::bytemuck::CheckedBitPattern for PackedOperationType {
     type Bits = u8;
 
     fn is_valid_bit_pattern(bits: &Self::Bits) -> bool {
-        *bits < 8
+        *bits < 7
     }
 }
 unsafe impl ::bytemuck::NoUninit for PackedOperationType {}
@@ -160,7 +159,6 @@ impl From<*mut ()> for PackedOperationInner {
 ///     PauliBased(Box<PauliBased>),
 ///     ControlFlow(Box<ControlFlowInstruction>),
 ///     Custom(Box<dyn CustomOperation>),
-///     Store(Box<Store>),
 /// }
 /// ```
 ///
@@ -325,6 +323,8 @@ mod standard_instruction {
                     ),
                     StandardInstruction::Reset => packed
                         .with_standard_instruction(bytemuck::cast(StandardInstructionType::Reset)),
+                    StandardInstruction::Store => packed
+                        .with_standard_instruction(bytemuck::cast(StandardInstructionType::Store)),
                 }
                 .into_bits()
                 .into(),
@@ -350,6 +350,7 @@ mod standard_instruction {
                         ),
                         StandardInstructionType::Measure => StandardInstruction::Measure,
                         StandardInstructionType::Reset => StandardInstruction::Reset,
+                        StandardInstructionType::Store => StandardInstruction::Store,
                     })
                 }
                 _ => Err("not a standard instruction!"),
@@ -361,7 +362,7 @@ mod standard_instruction {
 /// A private module to encapsulate the encoding of pointer types.
 mod pointer {
     use crate::operations::{
-        BoxedCustomOperation, ControlFlowInstruction, PyInstruction, Store, UnitaryGate,
+        BoxedCustomOperation, ControlFlowInstruction, PyInstruction, UnitaryGate,
     };
     use crate::packed_instruction::{PackedOperation, PackedOperationType, PauliBased};
     use std::ptr::NonNull;
@@ -447,7 +448,6 @@ mod pointer {
     impl_packable_pointer!(PauliBased, PackedOperationType::PauliBased);
     impl_packable_pointer!(ControlFlowInstruction, PackedOperationType::ControlFlow);
     impl_packable_pointer!(BoxedCustomOperation, PackedOperationType::Custom);
-    impl_packable_pointer!(Store, PackedOperationType::Store);
 }
 
 impl PackedOperation {
@@ -536,7 +536,6 @@ impl PackedOperation {
                 let custom_op: &BoxedCustomOperation = self.try_into().unwrap();
                 OperationRef::CustomOperation(&**custom_op)
             }
-            PackedOperationType::Store => OperationRef::Store(self.try_into().unwrap()),
         }
     }
 
@@ -600,11 +599,6 @@ impl PackedOperation {
         BoxedCustomOperation::from(custom).into()
     }
 
-    #[inline]
-    pub fn from_store(store: Box<Store>) -> Self {
-        store.into()
-    }
-
     /// Clone this `PackedOperation`, deepcopying if the internal object is a Python object.
     ///
     /// This is similar to [py_deepcopy], but only attaches to a Python interpreter if it has to.
@@ -619,8 +613,7 @@ impl PackedOperation {
             | OperationRef::Unitary(_)
             | OperationRef::PauliProductMeasurement(_)
             | OperationRef::PauliProductRotation(_)
-            | OperationRef::CustomOperation(_)
-            | OperationRef::Store(_) => Ok(self.clone()),
+            | OperationRef::CustomOperation(_) => Ok(self.clone()),
         }
     }
 
@@ -637,8 +630,7 @@ impl PackedOperation {
             | OperationRef::Unitary(_)
             | OperationRef::PauliProductMeasurement(_)
             | OperationRef::PauliProductRotation(_)
-            | OperationRef::CustomOperation(_)
-            | OperationRef::Store(_) => Ok(self.clone()),
+            | OperationRef::CustomOperation(_) => Ok(self.clone()),
         }
     }
 
@@ -666,7 +658,6 @@ impl PackedOperation {
                 OperationRef::PauliProductRotation(left),
                 OperationRef::PauliProductRotation(right),
             ) => Ok(left == right),
-            (OperationRef::Store(left), OperationRef::Store(right)) => Ok(left == right),
             _ => Ok(false),
         }
     }
@@ -723,6 +714,9 @@ impl PackedOperation {
                 StandardInstruction::Reset => {
                     RESET.get_bound(py).cast::<PyType>()?.is_subclass(py_type)
                 }
+                StandardInstruction::Store => {
+                    STORE.get_bound(py).cast::<PyType>()?.is_subclass(py_type)
+                }
             },
             OperationRef::PyCustom(inst) => inst.ob.bind(py).is_instance(py_type),
             OperationRef::Unitary(_) => UNITARY_GATE
@@ -740,7 +734,6 @@ impl PackedOperation {
             OperationRef::CustomOperation(_) => Err(PyNotImplementedError::new_err(
                 "Custom operations from Rust cannot be checked by instance",
             )),
-            OperationRef::Store(_) => STORE.get_bound(py).cast::<PyType>()?.is_subclass(py_type),
         }
     }
 }
@@ -757,7 +750,6 @@ impl Operation for PackedOperation {
             OperationRef::PauliProductMeasurement(ppm) => ppm.name(),
             OperationRef::PauliProductRotation(rotation) => rotation.name(),
             OperationRef::CustomOperation(op) => op.name(),
-            OperationRef::Store(store) => store.name(),
         };
         // SAFETY: all of the inner parts of the view are owned by `self`, so it's valid for us to
         // forcibly reborrowing up to our own lifetime. We avoid using `<OperationRef as Operation>`
@@ -808,7 +800,6 @@ impl Clone for PackedOperation {
             OperationRef::CustomOperation(custom_gate) => {
                 Self::from(BoxedCustomOperation::from(custom_gate.clone_dyn()))
             }
-            OperationRef::Store(store) => Self::from_store(Box::new(store.clone())),
         }
     }
 }
@@ -823,7 +814,6 @@ impl Drop for PackedOperation {
             PackedOperationType::PauliBased => PauliBased::drop_packed(self),
             PackedOperationType::ControlFlow => ControlFlowInstruction::drop_packed(self),
             PackedOperationType::Custom => BoxedCustomOperation::drop_packed(self),
-            PackedOperationType::Store => Store::drop_packed(self),
         }
     }
 }

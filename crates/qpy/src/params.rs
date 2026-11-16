@@ -9,7 +9,7 @@
 // Any modifications or derivative works of this code must retain this
 // copyright notice, and modified files need to carry a notice indicating
 // that they have been altered from the originals.
-use crate::value::ValueEndian;
+use crate::value::{ValueEndian, serialize_generic_value};
 use binrw::Endian;
 use num_complex::Complex64;
 use qiskit_circuit::operations::Param;
@@ -635,6 +635,13 @@ pub(crate) fn pack_param_obj(
                 data: int.to_be_bytes().into(),
             },
         },
+        // Runtime classical expressions are a fully Rust-native concept, so we can pack
+        // them directly without a round trip through Python space.
+        Param::Expr(expr) => {
+            let value = GenericValue::Expression(expr.as_ref().clone());
+            let (type_key, data) = serialize_generic_value(&value, qpy_data)?;
+            formats::GenericDataPack { type_key, data }
+        }
     })
 }
 
@@ -654,6 +661,7 @@ pub(crate) fn generic_value_to_param(
             Ok(Param::ParameterExpression(Arc::new(parameter_expression)))
         }
         GenericValue::ParameterExpression(exp) => Ok(Param::ParameterExpression(exp.clone())),
+        GenericValue::Expression(exp) => Ok(Param::Expr(std::sync::Arc::new(exp.clone()))),
         _ => qpy_data.caller.attach("Python defined parameter", |py| {
             Ok(Param::Obj(py_convert_from_generic_value(py, value)?))
         }),

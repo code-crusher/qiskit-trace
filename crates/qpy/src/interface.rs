@@ -444,6 +444,8 @@ pub fn native_load_qpy(data: &[u8]) -> Result<Vec<CircuitData>, QpyError> {
 mod tests {
     use super::*;
     use qiskit_circuit::Qubit;
+    use qiskit_circuit::classical::expr::{Expr, Stretch};
+    use qiskit_circuit::var_stretch_container::StretchType;
     use qiskit_circuit::operations::{DelayUnit, OperationRef, Param, StandardInstruction};
     use qiskit_circuit::packed_instruction::PackedOperation;
     use smallvec::smallvec;
@@ -514,5 +516,166 @@ mod tests {
 
         // The duration parameter is preserved.
         assert!(matches!(inst.params_view(), [Param::Int(d)] if *d == 13));
+    }
+
+    /// A `Store` instruction should survive a native QPY dump/load round trip as a
+    /// proper `StandardInstruction`, with both of its expression parameters intact.
+    ///
+    /// This is the regression test for the native (no-Python) path of gh-17001:
+    /// before `Param::Expr` existed, the lvalue/rvalue could only be rebuilt by
+    /// attaching to Python space, which fails for `QpyCaller::Native`.
+    #[test]
+    fn store_roundtrip() {
+        let version = QPY_WRITE_MIN_VERSION;
+
+        let lvalue = Expr::Stretch(Stretch {
+            uuid: 0xdead_beef,
+            name: "l".to_string(),
+        });
+        let rvalue = Expr::Stretch(Stretch {
+            uuid: 0xfeed_face,
+            name: "r".to_string(),
+        });
+
+        // Build a circuit containing a single Store whose parameters are the two
+        // expressions above.  The stretches must be declared in the circuit for the
+        // QPY writer to emit their standalone declarations.
+        let mut circuit = CircuitData::from_packed_operations(
+            1,
+            0,
+            [Ok((
+                PackedOperation::from_standard_instruction(StandardInstruction::Store),
+                smallvec![
+                    Param::Expr(std::sync::Arc::new(lvalue.clone())),
+                    Param::Expr(std::sync::Arc::new(rvalue.clone())),
+                ],
+                Vec::with_capacity(0),
+                Vec::with_capacity(0),
+            ))],
+            0.0.into(),
+        )
+        .unwrap();
+        circuit
+            .add_stretch(
+                Stretch {
+                    uuid: 0xdead_beef,
+                    name: "l".to_string(),
+                },
+                StretchType::Declare,
+            )
+            .unwrap();
+        circuit
+            .add_stretch(
+                Stretch {
+                    uuid: 0xfeed_face,
+                    name: "r".to_string(),
+                },
+                StretchType::Declare,
+            )
+            .unwrap();
+
+        // Round trip through the native QPY dump/load entry points.
+        let mut payload = Vec::new();
+        let circuit_array = [circuit];
+        let data = circuit_array.iter().map(|circuit| {
+            Ok((
+                circuit,
+                native_extra_data(circuit, "store_circuit", version),
+            ))
+        });
+        dump_qpy(data, Cursor::new(&mut payload), version, None, None).unwrap();
+        let loaded = load_qpy(&Bytes(payload), None, None).unwrap();
+
+        assert_eq!(loaded.len(), 1);
+        let loaded_circuit = &loaded[0].circuit_data;
+        assert_eq!(loaded_circuit.len(), 1);
+
+        // The operation round-tripped as the `Store` standard instruction.
+        let inst = &loaded_circuit.data()[0];
+        assert!(
+            matches!(inst.op.view(), OperationRef::StandardInstruction(
+                StandardInstruction::Store
+            )),
+            "expected a standard Store instruction, got {:?}",
+            inst.op.view()
+        );
+
+        // Both expression parameters survived the round trip.
+        assert_eq!(inst.params_view().len(), 2);
+        assert!(
+            matches!(inst.params_view()[0], Param::Expr(ref e) if **e == lvalue),
+            "lvalue did not round trip"
+        );
+        assert!(
+            matches!(inst.params_view()[1], Param::Expr(ref e) if **e == rvalue),
+            "rvalue did not round trip"
+        );
+    }
+
+    /// A `Delay` with unit `Expr` should survive a native QPY dump/load round trip
+    /// with its runtime-expression duration stored as a `Param::Expr` (gh-17001).
+    #[test]
+    fn delay_in_expr_roundtrip() {
+        let version = QPY_WRITE_MIN_VERSION;
+
+        let duration = Expr::Stretch(Stretch {
+            uuid: 0xabcd_1234,
+            name: "a".to_string(),
+        });
+
+        let mut circuit = CircuitData::from_packed_operations(
+            1,
+            0,
+            [Ok((
+                PackedOperation::from_standard_instruction(StandardInstruction::Delay(
+                    DelayUnit::EXPR,
+                )),
+                smallvec![Param::Expr(std::sync::Arc::new(duration.clone()))],
+                vec![Qubit(0)],
+                Vec::with_capacity(0),
+            ))],
+            0.0.into(),
+        )
+        .unwrap();
+        circuit
+            .add_stretch(
+                Stretch {
+                    uuid: 0xabcd_1234,
+                    name: "a".to_string(),
+                },
+                StretchType::Declare,
+            )
+            .unwrap();
+
+        let mut payload = Vec::new();
+        let circuit_array = [circuit];
+        let data = circuit_array.iter().map(|circuit| {
+            Ok((
+                circuit,
+                native_extra_data(circuit, "delay_expr_circuit", version),
+            ))
+        });
+        dump_qpy(data, Cursor::new(&mut payload), version, None, None).unwrap();
+        let loaded = load_qpy(&Bytes(payload), None, None).unwrap();
+
+        assert_eq!(loaded.len(), 1);
+        let loaded_circuit = &loaded[0].circuit_data;
+        assert_eq!(loaded_circuit.len(), 1);
+
+        let inst = &loaded_circuit.data()[0];
+        let OperationRef::StandardInstruction(StandardInstruction::Delay(unit)) = inst.op.view()
+        else {
+            panic!(
+                "expected a standard Delay instruction, got {:?}",
+                inst.op.view()
+            );
+        };
+        assert_eq!(unit, DelayUnit::EXPR);
+
+        // The runtime expression survived the round trip in Rust space.
+        assert!(
+            matches!(inst.params_view(), [Param::Expr(e)] if **e == duration),
+            "the expression duration did not round trip"
+        );
     }
 }

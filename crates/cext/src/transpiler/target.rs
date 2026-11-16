@@ -1418,6 +1418,8 @@ pub unsafe extern "C" fn qk_target_op_get(
                     StandardInstruction::Delay(_) => COperationKind::Delay,
                     StandardInstruction::Measure => COperationKind::Measure,
                     StandardInstruction::Reset => COperationKind::Reset,
+                    // `Store` is not exposed through the C API.
+                    StandardInstruction::Store => COperationKind::Unknown,
                 },
                 qiskit_circuit::operations::OperationRef::Unitary(_) => COperationKind::Unitary,
                 _ => panic!(
@@ -1442,6 +1444,7 @@ pub unsafe extern "C" fn qk_target_op_get(
                             std::ptr::from_ref(param)
                         }
                         Param::Obj(_) => panic!("Objects are not supported in the C API."),
+                        Param::Expr(_) => panic!("Expressions are not supported in the C API."),
                     })
                     .collect(),
             );
