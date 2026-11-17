@@ -1,0 +1,9 @@
+---
+fixes:
+  - |
+    :meth:`.DAGCircuit.__deepcopy__` now treats its ``memo`` argument as an opaque
+    object, per the Python data model for ``__deepcopy__``, instead of requiring a
+    ``dict`` instance.  This fixes interoperability with third-party
+    ``copy.deepcopy`` accelerators such as `copium <https://github.com/Bobronium/copium>`__
+    that pass their own mapping-like memo objects.
+    Fixed `#16965 <https://github.com/Qiskit/qiskit/issues/16965>`__.

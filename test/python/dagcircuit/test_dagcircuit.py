@@ -233,6 +233,42 @@ class TestDagRegisters(DAGTest):
         self.assertEqual(output.find_bit(output.clbits[0]).index, 0)
         self.assertEqual(output.find_bit(output.clbits[0]).registers, [(cr, 0)])
 
+    def test_deepcopy_non_dict_memo(self):
+        """``__deepcopy__`` accepts any mapping-like memo object, not just ``dict``.
+
+        The ``memo`` argument is documented as opaque in the Python data model, so
+        third-party ``copy.deepcopy`` accelerators (like ``copium``) may pass their
+        own memo types.  See issue #16965.
+        """
+
+        class FakeMemo:
+            def __init__(self):
+                self._store = {}
+
+            def __getitem__(self, key):
+                return self._store[key]
+
+            def __setitem__(self, key, value):
+                self._store[key] = value
+
+            def __contains__(self, key):
+                return key in self._store
+
+            def get(self, key, default=None):
+                return self._store.get(key, default)
+
+        dag = DAGCircuit()
+        qr = QuantumRegister(2, "qr")
+        dag.add_qreg(qr)
+        dag.apply_operation_back(HGate(), [qr[0]])
+        dag.metadata = {"a": 1}
+        output = dag.__deepcopy__(FakeMemo())
+        self.assertEqual(output.find_bit(output.qubits[1]).index, 1)
+        self.assertEqual(output.find_bit(output.qubits[1]).registers, [(qr, 1)])
+        self.assertEqual(output.metadata, {"a": 1})
+        self.assertIsNot(output.metadata, dag.metadata)
+        self.assertEqual(len(list(output.op_nodes())), 1)
+
     def test_pickle_bit_locations_with_no_reg(self):
         """Test bit locations with no registers preserved through pickle."""
         dag = DAGCircuit()
