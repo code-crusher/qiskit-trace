@@ -713,6 +713,126 @@ class TestHighLevelSynthesisInterface(QiskitTestCase):
 
         self.assertEqual(ref, pm.run(qc))
 
+    @data(True, False)
+    def test_add_ancillas(self, use_target):
+        """Test that qubits available on the target but not in the circuit are used as ancillas."""
+        gate = Gate(name="duckling", num_qubits=3, params=[])
+        hls_config = HLSConfig(duckling=[MockPlugin()])
+
+        qc = QuantumCircuit(4)
+        qc.h(3)  # the only ancilla qubit from the circuit is dirty
+        qc.barrier()
+        qc.append(gate, [0, 1, 2])
+
+        if use_target:
+            backend = GenericBackendV2(num_qubits=7, basis_gates=["h", "x", "s", "t", "cx"])
+            hardware = {"target": backend.target}
+        else:
+            hardware = {"coupling_map": CouplingMap.from_line(7)}
+
+        with self.subTest("ancillas added"):
+            synthesized = HighLevelSynthesis(hls_config=hls_config, add_ancillas=True, **hardware)(
+                qc
+            )
+            # the three qubits not present in the circuit are added as clean ancillas
+            self.assertEqual(synthesized.num_qubits, 7)
+            count = synthesized.count_ops()
+            self.assertEqual(count.get("x", 0), gate.num_qubits)
+            self.assertEqual(count.get("s", 0), 3)  # clean ancillas
+            self.assertEqual(count.get("t", 0), 1)  # dirty ancilla
+
+        with self.subTest("ancillas not added by default"):
+            synthesized = HighLevelSynthesis(hls_config=hls_config, **hardware)(qc)
+            self.assertEqual(synthesized.num_qubits, 4)
+            count = synthesized.count_ops()
+            self.assertEqual(count.get("s", 0), 0)
+            self.assertEqual(count.get("t", 0), 1)
+
+    def test_add_ancillas_not_used(self):
+        """Test that the additional qubits are not added when no synthesis method uses them."""
+        qc = QuantumCircuit(4)
+        qc.ccx(0, 1, 2)
+        qc.h(3)
+
+        synthesized = HighLevelSynthesis(
+            basis_gates=["cx", "u"], coupling_map=CouplingMap.from_line(10), add_ancillas=True
+        )(qc)
+
+        self.assertEqual(synthesized.num_qubits, 4)
+        self.assertEqual(Operator(qc), Operator(synthesized))
+
+    def test_add_ancillas_mcx(self):
+        """Test that an MCX gate can use the additional qubits of the target as ancillas."""
+        # The circuit has no ancilla qubits, whereas the "n_clean_m15" method requires
+        # two clean ancillas for an MCX gate with five controls.
+        qc = QuantumCircuit(6)
+        qc.mcx([0, 1, 2, 3, 4], 5)
+
+        hls_config = HLSConfig(mcx=["n_clean_m15"])
+        coupling_map = CouplingMap.from_line(10)
+
+        with self.subTest("method not applicable without additional ancillas"):
+            synthesized = HighLevelSynthesis(
+                hls_config=hls_config, basis_gates=["cx", "u"], coupling_map=coupling_map
+            )(qc)
+            self.assertEqual(synthesized.num_qubits, 6)
+
+        with self.subTest("method applicable with additional ancillas"):
+            synthesized = HighLevelSynthesis(
+                hls_config=hls_config,
+                basis_gates=["cx", "u"],
+                coupling_map=coupling_map,
+                add_ancillas=True,
+            )(qc)
+            self.assertEqual(synthesized.num_qubits, 8)
+            self.assertEqual(set(synthesized.count_ops()), {"cx", "u"})
+
+            # the synthesized circuit should act as the MCX gate, with the two added ancillas
+            # starting and ending in the state |0>
+            expected = qc.copy()
+            expected.add_bits([Qubit(), Qubit()])
+            input_state = Statevector(random_unitary(64, seed=1).data[:, 0])
+            state = Statevector.from_label("00").tensor(input_state)
+            self.assertTrue(state.evolve(synthesized).equiv(state.evolve(expected)))
+
+    def test_add_ancillas_fewer_than_circuit(self):
+        """Test that ``add_ancillas`` is a no-op when the target has no spare qubits."""
+        gate = Gate(name="duckling", num_qubits=1, params=[])
+        hls_config = HLSConfig(duckling=[MockPlugin()])
+
+        qc = QuantumCircuit(3)
+        qc.append(gate, [0])
+
+        synthesized = HighLevelSynthesis(
+            hls_config=hls_config,
+            coupling_map=CouplingMap.from_line(2),
+            add_ancillas=True,
+        )(qc)
+
+        self.assertEqual(synthesized.num_qubits, 3)
+        # only the two qubits of the circuit can be used as ancillas
+        count = synthesized.count_ops()
+        self.assertEqual(count.get("s", 0), 2)
+
+    def test_add_ancillas_with_physical_indices(self):
+        """Test that adding ancillas is not allowed after the layout is set."""
+        qc = QuantumCircuit(6)
+        qc.mcx([0, 1, 2, 3, 4], 5)
+        target = Target.from_configuration(
+            num_qubits=10, basis_gates=["cx", "u"], coupling_map=CouplingMap.from_line(10)
+        )
+
+        with self.assertRaises(TranspilerError):
+            HighLevelSynthesis(target=target, add_ancillas=True, use_qubit_indices=True)(qc)
+
+        # when the circuit already spans the whole target, no qubits would be added
+        qc = QuantumCircuit(10)
+        qc.mcx([0, 1, 2, 3, 4], 5)
+        synthesized = HighLevelSynthesis(
+            target=target, add_ancillas=True, use_qubit_indices=True, equivalence_library=std_eqlib
+        )(qc)
+        self.assertEqual(synthesized.num_qubits, 10)
+
     def test_synth_fails_definition_exists(self):
         """Test the case that a synthesis fails but the operation can be unrolled."""
 

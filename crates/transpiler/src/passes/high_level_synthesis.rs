@@ -1050,13 +1050,20 @@ fn py_synthesize_circuit(
 /// This is the main function called from the Python space. If the pass does not need
 /// to do anything, it returns None, meaning that the DAG should remain unchanged.
 /// Otherwise, the new DAG is returned.
+///
+/// The argument `num_extra_qubits` specifies the number of additional qubits, not present
+/// in the input DAG, that may be used as auxiliary qubits during synthesis. These qubits are
+/// assumed to have the same initial state as the qubits of the input DAG (as specified by
+/// `qubits_initially_zero`). Only the additional qubits that are actually used by some
+/// synthesized operation are appended to the output DAG.
 #[pyfunction]
-#[pyo3(name = "run_on_dag", signature = (py_dag, data, qubits_initially_zero))]
+#[pyo3(name = "run_on_dag", signature = (py_dag, data, qubits_initially_zero, num_extra_qubits=0))]
 pub fn run_high_level_synthesis(
     py: Python,
     py_dag: &PyDAGCircuit,
     data: &Bound<HighLevelSynthesisData>,
     qubits_initially_zero: bool,
+    num_extra_qubits: usize,
 ) -> PyResult<Option<PyDAGCircuit>> {
     // Fast-path: check if HighLevelSynthesis can be skipped altogether. This is only
     // done at the top-level since this does not track the qubit states.
@@ -1090,7 +1097,10 @@ pub fn run_high_level_synthesis(
 
         let num_qubits = circuit.num_qubits();
         let input_qubits: Vec<Qubit> = (0..num_qubits).map(Qubit::new).collect();
-        let mut tracker = QubitTracker::new(num_qubits, qubits_initially_zero);
+        // The tracker additionally keeps track of the qubits that are not present in the
+        // input circuit but may still be used as auxiliary qubits. These are appended to
+        // the output circuit only when they are actually used.
+        let mut tracker = QubitTracker::new(num_qubits + num_extra_qubits, qubits_initially_zero);
 
         let (output_circuit, _) =
             run_on_circuitdata(py, &circuit, &input_qubits, data, &mut tracker)?;
