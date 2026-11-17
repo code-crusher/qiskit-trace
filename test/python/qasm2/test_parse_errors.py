@@ -170,7 +170,11 @@ def bad_token_parametrisation():
         ("if (cond == 0", without(T.RPAREN)),
         ("if (cond == 0)", without(T.ID, T.RESET, T.MEASURE)),
     ]:
-        for token in disallowed:
+        # `disallowed` is a set, but we need a deterministic iteration order so that the generated
+        # test IDs are stable.  This matters under ``pytest -n`` (pytest-xdist), where each worker
+        # collects tests independently and asserts that they all produced the same list, but the
+        # workers can have different ``PYTHONHASHSEED`` values (the default when unset).
+        for token in sorted(disallowed, key=lambda token: token.name):
             yield BadTokenCase(statement, token.value, name=f"'{statement}'-{token.name.lower()}")
 
 
