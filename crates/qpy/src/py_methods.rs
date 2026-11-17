@@ -367,7 +367,15 @@ pub(crate) fn py_convert_to_generic_value(
     let type_key = py_get_type_key(py_object)?;
     match type_key {
         ValueType::Bool => Ok(GenericValue::Bool(py_object.extract::<bool>()?)),
-        ValueType::Integer => Ok(GenericValue::Int64(py_object.extract::<i64>()?)),
+        ValueType::Integer => {
+            // Integers arrive untyped from Python, so accept the full unsigned range too; the
+            // writer records fitting values with the legacy signed key regardless.
+            if let Ok(int) = py_object.extract::<i64>() {
+                Ok(GenericValue::Int64(int))
+            } else {
+                Ok(GenericValue::UInt64(py_object.extract::<u64>()?))
+            }
+        }
         ValueType::Float => Ok(GenericValue::Float64(py_object.extract::<f64>()?)),
         ValueType::Complex => Ok(GenericValue::Complex64(py_object.extract::<Complex64>()?)),
         ValueType::String => Ok(GenericValue::String(py_object.extract::<String>()?)),
@@ -445,6 +453,8 @@ pub(crate) fn py_convert_to_generic_value(
                 ))
             }
         }
+        // `py_get_type_key` never yields this: Python integers carry no signedness.
+        ValueType::UnsignedInteger => Ok(GenericValue::UInt64(py_object.extract::<u64>()?)),
     }
 }
 
@@ -455,6 +465,7 @@ pub(crate) fn py_convert_from_generic_value(
     match value {
         GenericValue::Bool(value) => Ok(value.into_py_any(py)?),
         GenericValue::Int64(value) => Ok(value.into_py_any(py)?),
+        GenericValue::UInt64(value) => Ok(value.into_py_any(py)?),
         GenericValue::Float64(value) => Ok(value.into_py_any(py)?),
         GenericValue::Complex64(value) => Ok(value.into_py_any(py)?),
         GenericValue::String(value) => Ok(value.into_py_any(py)?),

@@ -30,6 +30,7 @@ use qiskit_circuit::bit::{
     ClassicalRegister, QuantumRegister, Register, ShareableClbit, ShareableQubit,
 };
 use qiskit_circuit::circuit_data::{CircuitData, PyCircuitData};
+use qiskit_circuit::duration::Duration;
 use qiskit_circuit::instruction::Parameters;
 use qiskit_circuit::interner::Interned;
 use qiskit_circuit::operations::{
@@ -326,7 +327,14 @@ pub fn instruction_values_to_params(
             .map(|value| -> Result<_, QpyError> {
                 match value {
                     GenericValue::Float64(float) => Ok(Param::Float(float)),
-                    GenericValue::Int64(i64) => Ok(Param::Int(i64)),
+                    // `Param::Int` is unsigned, so a negative integer can only be a general
+                    // parameter value; those are floats in Rust, and were coerced to floats on
+                    // the Python side before `Param::Int` became unsigned too.
+                    GenericValue::Int64(int) => Ok(match u64::try_from(int) {
+                        Ok(int) => Param::Int(int),
+                        Err(_) => Param::Float(int as f64),
+                    }),
+                    GenericValue::UInt64(int) => Ok(Param::Int(int)),
                     GenericValue::ParameterExpression(exp) => Ok(Param::ParameterExpression(exp)),
                     GenericValue::ParameterExpressionSymbol(symbol)
                     | GenericValue::ParameterExpressionVectorSymbol(symbol) => {
@@ -659,6 +667,13 @@ fn unpack_control_flow(
             let duration = match duration_value {
                 GenericValue::Duration(duration) => Some(BoxDuration::Duration(duration)),
                 GenericValue::Expression(exp) => Some(BoxDuration::Expr(exp.clone())),
+                // A `dt` duration written as a bare integer parameter (rather than a
+                // ``DURATION`` pack); this is how the writer has always encoded it.  A negative
+                // value cannot be a duration, so it falls through as if unset.
+                GenericValue::Int64(value) => u64::try_from(value)
+                    .ok()
+                    .map(|value| BoxDuration::Duration(Duration::dt(value))),
+                GenericValue::UInt64(value) => Some(BoxDuration::Duration(Duration::dt(value))),
                 _ => None,
             };
             let annotations = unpack_annotations(&instruction.annotations, qpy_data)?;
@@ -814,6 +829,9 @@ fn unpack_control_flow(
                             GenericValue::BigInt(value) => Ok(CaseSpecifier::Uint(value.clone())),
                             GenericValue::Int64(value) => {
                                 Ok(CaseSpecifier::Uint(BigUint::from(value as u64)))
+                            }
+                            GenericValue::UInt64(value) => {
+                                Ok(CaseSpecifier::Uint(BigUint::from(value)))
                             }
                             _ => Err(QpyError::InvalidInstruction(
                                 "could not identify switch case label spec".to_string(),

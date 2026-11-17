@@ -675,7 +675,10 @@ fn param_expr_assignment(
                 bind_map.insert(key, val);
             }
             Param::Int(int) => {
-                bind_map.insert(key, Value::Int(*int));
+                // `Param::Int` is unsigned while `Value::Int` is signed; values outside the
+                // signed range cannot be bound into a `ParameterExpression`.
+                let int = i64::try_from(*int).map_err(|_| ParameterError::InvalidValue)?;
+                bind_map.insert(key, Value::Int(int));
             }
         }
     }

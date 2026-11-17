@@ -59,6 +59,7 @@ if typing.TYPE_CHECKING:
     from qiskit.circuit.annotation import QPYSerializer, Annotation
 
 MAX_LABEL_SIZE = 65535
+_I64_MAX = 2**63 - 1
 
 
 class _AnnotationSerializationState:
@@ -330,6 +331,9 @@ def _loads_instruction_parameter(
     elif type_key == type_keys.Value.INTEGER:
         # TODO This uses little endian. Should be fixed in the next QPY version.
         param = struct.unpack("<q", data_bytes)[0]
+    elif type_key == type_keys.Value.UNSIGNED_INTEGER:
+        # TODO This uses little endian. Should be fixed in the next QPY version.
+        param = struct.unpack("<Q", data_bytes)[0]
     elif type_key == type_keys.Value.FLOAT:
         # TODO This uses little endian. Should be fixed in the next QPY version.
         param = struct.unpack("<d", data_bytes)[0]
@@ -984,8 +988,19 @@ def _dumps_instruction_parameter(
         )
     elif isinstance(param, int):
         # TODO This uses little endian. This should be fixed in next QPY version.
-        type_key = type_keys.Value.INTEGER
-        data_bytes = struct.pack("<q", param)
+        if param > _I64_MAX:
+            # Unsigned-only durations (e.g. `Delay` in `dt`) use the dedicated `'u'` key; the
+            # bit pattern of anything that fits a signed integer is written with `'i'` so
+            # every existing reader keeps understanding the file.
+            if version < 19:
+                raise UnsupportedFeatureForVersion(
+                    "unsigned 64-bit integers above i64::MAX", required=19, target=version
+                )
+            type_key = type_keys.Value.UNSIGNED_INTEGER
+            data_bytes = struct.pack("<Q", param)
+        else:
+            type_key = type_keys.Value.INTEGER
+            data_bytes = struct.pack("<q", param)
     elif isinstance(param, float):
         # TODO This uses little endian. This should be fixed in next QPY version.
         type_key = type_keys.Value.FLOAT

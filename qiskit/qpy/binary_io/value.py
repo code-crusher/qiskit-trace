@@ -971,7 +971,17 @@ def dumps_value(
     type_key = type_keys.Value.assign(obj)
 
     if type_key == type_keys.Value.INTEGER:
-        binary_data = struct.pack("!q", obj)
+        if obj > 2**63 - 1:
+            # Unsigned-only integers use the dedicated ``'u'`` key; anything that fits a
+            # signed integer keeps the legacy ``'i'`` encoding.
+            if version < 19:
+                raise exceptions.UnsupportedFeatureForVersion(
+                    "unsigned 64-bit integers above i64::MAX", required=19, target=version
+                )
+            type_key = type_keys.Value.UNSIGNED_INTEGER
+            binary_data = struct.pack("!Q", obj)
+        else:
+            binary_data = struct.pack("!q", obj)
     elif type_key == type_keys.Value.FLOAT:
         binary_data = struct.pack("!d", obj)
     elif type_key == type_keys.Value.COMPLEX:
@@ -1073,6 +1083,8 @@ def loads_value(
 
     if type_key == type_keys.Value.INTEGER:
         return struct.unpack("!q", binary_data)[0]
+    if type_key == type_keys.Value.UNSIGNED_INTEGER:
+        return struct.unpack("!Q", binary_data)[0]
     if type_key == type_keys.Value.FLOAT:
         return struct.unpack("!d", binary_data)[0]
     if type_key == type_keys.Value.COMPLEX:

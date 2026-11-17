@@ -137,7 +137,7 @@ fn push_node_back(
             )),
         }?;
 
-        this_t0 + u64::try_from(duration)?
+        this_t0 + duration
     } else {
         this_t0
     };

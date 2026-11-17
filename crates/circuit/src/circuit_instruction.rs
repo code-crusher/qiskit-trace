@@ -454,18 +454,25 @@ impl CircuitInstruction {
                                 Param::ParameterExpression(right) => left == right,
                                 Param::Obj(right) => right.bind(py).eq(left.as_ref().clone())?,
                                 Param::Int(right) => {
-                                    let right_val: crate::parameter::symbol_expr::Value =
-                                        (*right).into();
-                                    left.as_ref() == &ParameterExpression::from(right_val)
+                                    // `Param::Int` is unsigned while `Value::Int` is signed;
+                                    // only values that fit can compare equal.
+                                    i64::try_from(*right)
+                                        .ok()
+                                        .map(crate::parameter::symbol_expr::Value::Int)
+                                        .map(ParameterExpression::from)
+                                        .as_ref()
+                                        == Some(left.as_ref())
                                 }
                             },
                             Param::Obj(left) => left.bind(py).eq(right)?,
                             Param::Int(left) => match right {
                                 Param::Float(_) => false,
                                 Param::ParameterExpression(right) => {
-                                    let left_val: crate::parameter::symbol_expr::Value =
-                                        (*left).into();
-                                    &ParameterExpression::from(left_val) == right.as_ref()
+                                    let left_val = i64::try_from(*left)
+                                        .ok()
+                                        .map(crate::parameter::symbol_expr::Value::Int)
+                                        .map(ParameterExpression::from);
+                                    left_val.as_ref() == Some(right.as_ref())
                                 }
                                 Param::Obj(right) => right.bind(py).eq(left)?,
                                 Param::Int(right) => left == right,
@@ -662,6 +669,17 @@ impl<'a, 'py, T: CircuitBlock> FromPyObject<'a, 'py> for OperationFromPython<T> 
             let raw = ob.getattr(intern!(py, "label"))?;
             Ok(raw.extract::<Option<String>>()?.map(Box::new))
         };
+        let extract_duration_dt = |py_duration: &Bound<PyAny>| -> PyResult<u64> {
+            // `dt` durations arrive from Python without a declared type; accept both exact
+            // integers (widened to the full `u64` range) and the integral floats that the
+            // previous `as i64` conversion silently accepted.
+            if let Ok(int) = py_duration.extract::<u64>() {
+                Ok(int)
+            } else {
+                let float = py_duration.extract::<f64>()?;
+                Ok(float as u64)
+            }
+        };
 
         'standard_gate: {
             // Our Python standard gates have a `_standard_gate` field at the class level so we can
@@ -755,9 +773,12 @@ impl<'a, 'py, T: CircuitBlock> FromPyObject<'a, 'py> for OperationFromPython<T> 
                         let unit: Option<String> = ob.getattr(intern!(py, "unit"))?.extract()?;
                         let duration = if let Some(py_duration) = py_duration {
                             Some(match unit.as_deref().unwrap_or("dt") {
-                                "dt" => BoxDuration::Duration(Duration::dt(
-                                    py_duration.extract::<f64>()? as i64,
-                                )),
+                                // Python-space durations arrive without a declared type, and
+                                // historically `dt` values have accepted integral floats, so
+                                // keep accepting them while widening the integer range to `u64`.
+                                "dt" => BoxDuration::Duration(Duration::dt(extract_duration_dt(
+                                    &py_duration,
+                                )?)),
                                 "s" => BoxDuration::Duration(Duration::s(py_duration.extract()?)),
                                 "ms" => BoxDuration::Duration(Duration::ms(py_duration.extract()?)),
                                 "us" => BoxDuration::Duration(Duration::us(py_duration.extract()?)),

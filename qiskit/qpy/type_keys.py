@@ -72,6 +72,7 @@ class Value(TypeKeyBase):
     """Type key enum for value object."""
 
     INTEGER = b"i"
+    UNSIGNED_INTEGER = b"u"
     FLOAT = b"f"
     COMPLEX = b"c"
     CASE_DEFAULT = b"d"

@@ -39,8 +39,8 @@ pub fn run_instruction_duration_check(
     let dag = dag.try_read()?;
     let num_stretches = dag.num_stretches();
 
-    let acquire_align = i64::from(acquire_align);
-    let pulse_align = i64::from(pulse_align);
+    let acquire_align = u64::from(acquire_align);
+    let pulse_align = u64::from(pulse_align);
 
     // Rescheduling is not necessary
     if (acquire_align == 1 && pulse_align == 1) || num_stretches != 0 {

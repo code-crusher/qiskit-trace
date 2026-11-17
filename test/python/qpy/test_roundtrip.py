@@ -259,6 +259,41 @@ class TestQPYRoundtrip(QiskitTestCase):
         qc.delay(1, 0, "dt")
         self.assert_roundtrip_equal(qc, version=version, read_with=read_with, write_with=write_with)
 
+    @all_qpy_combinations(19)
+    def test_delay_roundtrip_u64_duration(self, version, write_with, read_with):
+        """Delay durations that do not fit in a signed 64-bit integer round trip at v19+.
+
+        Since QPY v19, unsigned 64-bit integers are stored natively via the ``'u'`` type key
+        rather than being truncated to the signed range, so ``dt`` delays anywhere in the
+        full ``u64`` range survive a round trip exactly.
+        """
+        qc = QuantumCircuit(1)
+        qc.delay(2**64 - 1, 0, "dt")
+        qc.delay(2**63, 0, "dt")
+        qc.delay(2**63 - 1, 0, "dt")
+        self.assert_roundtrip_equal(qc, version=version, read_with=read_with, write_with=write_with)
+
+    @all_qpy_combinations(QPY_RUST_READ_MIN_VERSION)
+    def test_delay_u64_duration_old_version_rejected(self, version, write_with, read_with):
+        """Dumping a duration beyond ``i64::MAX`` to a pre-v19 file must be rejected.
+
+        Older readers do not know the ``'u'`` type key, so silently writing one would
+        produce a file that existing Qiskit versions cannot parse.
+        """
+        qc = QuantumCircuit(1)
+        qc.delay(2**63, 0, "dt")
+        if version < 19:
+            use_rust = write_with == "Rust"
+            with patch(
+                "qiskit.qpy.common.QPY_RUST_WRITE_MIN_VERSION",
+                QPY_RUST_WRITE_MIN_VERSION if use_rust else QPY_VERSION + 1,
+            ), io.BytesIO() as fptr, self.assertRaises(UnsupportedFeatureForVersion):
+                dump(qc, fptr, version=version)
+        else:
+            self.assert_roundtrip_equal(
+                qc, version=version, read_with=read_with, write_with=write_with
+            )
+
     @all_qpy_combinations(14)
     def test_delay_expr_roundtrip(self, version, write_with, read_with):
         stretch_expr = QuantumCircuit(1, name="stretch_expr_delay_circuit")

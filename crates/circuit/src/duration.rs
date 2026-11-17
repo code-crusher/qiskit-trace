@@ -34,7 +34,7 @@ use pyo3::types::PyTuple;
 #[derive(PartialEq, Clone, Copy, Debug)]
 #[allow(non_camel_case_types)]
 pub enum Duration {
-    dt(i64),
+    dt(u64),
     ps(f64),
     ns(f64),
     us(f64),

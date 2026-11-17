@@ -358,8 +358,9 @@ impl From<&Duration> for CDurationType {
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub union CDurationValue {
-    /// System time units (active when `ty` in `QkDurationInfo` is `QkDurationType_Dt`)
-    dt: i64,
+    /// System time units (active when `ty` in `QkDurationInfo` is `QkDurationType_Dt`).
+    /// Durations are unsigned; the representation matches the in-memory `Duration::dt`.
+    dt: u64,
     /// Real time value (active for all other duration types)
     time: f64,
 }

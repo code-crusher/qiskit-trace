@@ -1105,7 +1105,8 @@ fn param_try_int(param: &Param) -> Option<i64> {
             Ok(Value::Int(v)) => Some(v),
             _ => None,
         },
-        Param::Int(int) => Some(*int),
+        // `Param::Int` is unsigned; values beyond `int64_t` have no signed representation.
+        Param::Int(int) => i64::try_from(*int).ok(),
         Param::Float(_) => None,
         Param::Obj(_) => None,
     }

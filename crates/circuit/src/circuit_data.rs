@@ -1284,7 +1284,17 @@ impl CircuitData {
                     })?
                 }
                 Param::Int(u) => {
-                    let map: HashMap<&Symbol, Value> = HashMap::from([(symbol, Value::Int(*u))]);
+                    // `Value::Int` is signed while `Param::Int` is unsigned, so a duration
+                    // outside the signed range cannot be bound into an expression.
+                    let map: HashMap<&Symbol, Value> = HashMap::from([(
+                        symbol,
+                        Value::Int(i64::try_from(*u).map_err(|_| {
+                            PyTypeError::new_err(format!(
+                                "Cannot bind the duration '{u}' into a parameter expression; \
+                                 it exceeds the range of a signed 64-bit integer."
+                            ))
+                        })?),
+                    )]);
                     expr.bind(&map, false)?
                 }
             };

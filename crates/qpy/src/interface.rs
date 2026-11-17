@@ -84,7 +84,7 @@ const fn parse_version() -> (u8, u8, u8) {
 }
 
 const QISKIT_VERSION: (u8, u8, u8) = parse_version();
-const QPY_VERSION: u8 = 18;
+const QPY_VERSION: u8 = 19;
 
 /// Serializes native circuits into a complete binary QPY payload.
 /// # Arguments
@@ -447,6 +447,7 @@ mod tests {
     use qiskit_circuit::operations::{DelayUnit, OperationRef, Param, StandardInstruction};
     use qiskit_circuit::packed_instruction::PackedOperation;
     use smallvec::smallvec;
+    use std::iter::once;
 
     /// Builds the [`ExtraCircuitData`] required to serialize a native circuit that carries no
     /// Python-only metadata or transpiler layout.
@@ -514,5 +515,71 @@ mod tests {
 
         // The duration parameter is preserved.
         assert!(matches!(inst.params_view(), [Param::Int(d)] if *d == 13));
+    }
+
+    /// A `Delay` measured in `dt` with a duration that does not fit `i64` (i.e. only representable
+    /// as an unsigned 64-bit integer) requires the QPY v19 `'u'` type key.  The value must round
+    /// trip exactly at v19, and writing it to an older version must be rejected instead of
+    /// silently emitting a type key that existing readers cannot understand.
+    #[test]
+    fn delay_in_dt_roundtrip_u64() {
+        // 2**63 does not fit `i64`, so it must be written with the unsigned-integer type key.
+        let duration = 1u64 << 63;
+        let circuit = CircuitData::from_packed_operations(
+            1,
+            0,
+            [Ok((
+                PackedOperation::from_standard_instruction(StandardInstruction::Delay(
+                    DelayUnit::DT,
+                )),
+                smallvec![Param::Int(duration)],
+                vec![Qubit(0)],
+                Vec::with_capacity(0),
+            ))],
+            0.0.into(),
+        )
+        .unwrap();
+
+        // Dumping to any version before 19 is rejected: those readers predate the `'u'` type key.
+        // The Rust writer itself only supports writing from v17 (`QPY_WRITE_MIN_VERSION`) onwards.
+        for version in QPY_WRITE_MIN_VERSION..19 {
+            let mut payload = Vec::new();
+            let data = once(Ok((
+                &circuit,
+                native_extra_data(&circuit, "delay_dt_circuit", version),
+            )));
+            match dump_qpy(data, Cursor::new(&mut payload), version, None, None) {
+                Ok(()) => panic!("dumping a u64 duration to QPY v{version} must fail"),
+                Err(error) => assert!(
+                    error
+                        .to_string()
+                        .contains("unsigned 64-bit integers above i64::MAX"),
+                    "unexpected error: {error}"
+                ),
+            }
+        }
+
+        // At v19 the value round trips exactly, with the unsigned-integer type key in the payload.
+        let version = 19;
+        let mut payload = Vec::new();
+        let data = once(Ok((
+            &circuit,
+            native_extra_data(&circuit, "delay_dt_circuit", version),
+        )));
+        dump_qpy(data, Cursor::new(&mut payload), version, None, None).unwrap();
+        // The type key is prefixed as `key + u64::to_be_bytes(len)` by `write_generic_typed_data`.
+        let expected = [b'u']
+            .into_iter()
+            .chain(8u64.to_be_bytes())
+            .chain(duration.to_be_bytes())
+            .collect::<Vec<_>>();
+        assert!(
+            payload.windows(expected.len()).any(|w| w == expected),
+            "expected the QPY payload to contain the 'u' type key followed by the big-endian value"
+        );
+        let loaded = load_qpy(&Bytes(payload), None, None).unwrap();
+        assert_eq!(loaded.len(), 1);
+        let inst = &loaded[0].circuit_data.data()[0];
+        assert!(matches!(inst.params_view(), [Param::Int(d)] if *d == duration));
     }
 }

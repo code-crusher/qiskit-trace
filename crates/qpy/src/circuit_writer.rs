@@ -483,7 +483,7 @@ fn pack_control_flow_inst(
                 Some(box_duration) => match box_duration {
                     BoxDuration::Duration(duration) => {
                         let duration_value = match duration {
-                            Duration::dt(v) => GenericValue::Int64(*v),
+                            Duration::dt(v) => GenericValue::UInt64(*v),
                             Duration::ps(v)
                             | Duration::us(v)
                             | Duration::ns(v)

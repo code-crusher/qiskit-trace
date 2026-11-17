@@ -471,6 +471,23 @@ There is a circuit payload for each circuit (where the total number is dictated
 by ``num_circuits`` in the file header). There is no padding between the
 circuits in the data.
 
+.. _qpy_version_19:
+
+Version 19
+----------
+
+Version 19 adds the ``'u'`` (unsigned integer) type key for ``INSTRUCTION_PARAM`` and
+value payloads.  It is used to store unsigned 64-bit integers, which previously could not
+be represented: all integers were stored as signed 64-bit values, limiting ``Delay``
+durations in units of ``dt`` to ``i64::MAX`` (``9223372036854775807``) instead of the
+native ``u64::MAX`` (``18446744073709551615``).
+
+The payload of a ``'u'`` value is a single unsigned 64-bit integer, in the same byte
+order the corresponding ``'i'`` payload would use.  The ``'u'`` key is only written when
+the value does not fit in a signed 64-bit integer; values in the signed range continue to
+be written as ``'i'`` so that files without out-of-range durations remain readable by
+older versions of Qiskit.
+
 .. _qpy_version_18:
 
 Version 18
@@ -2305,8 +2322,9 @@ The contents of each INSTRUCTION_PARAM is:
     }
 
 After each INSTRUCTION_PARAM the next ``size`` bytes are the parameter's data.
-The ``type`` field can be ``'i'``, ``'f'``, ``'p'``, ``'e'``, ``'s'``, ``'c'``
-or ``'n'`` which dictate the format. For ``'i'`` it's an integer, ``'f'`` it's
+The ``type`` field can be ``'i'``, ``'u'``, ``'f'``, ``'p'``, ``'e'``, ``'s'``,
+``'c'`` or ``'n'`` which dictate the format. For ``'i'`` it's an integer, ``'u'``
+it's an unsigned integer (:ref:`version 19 <qpy_version_19>` and above), ``'f'`` it's
 a double, ``'s'`` if it's a string (encoded as utf8), ``'c'`` is a complex and
 the data is represented by the struct format in the :ref:`qpy_param_expr` section.
 ``'p'`` defines a :class:`~qiskit.circuit.Parameter` object  which is

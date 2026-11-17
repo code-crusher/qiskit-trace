@@ -59,7 +59,8 @@ pub use crate::standard_gate::*;
 /// - [`Param::Float`]: Represents a bound parameter with a real value
 ///   associated with it.
 /// - [`Param::Int`]: Used exclusively to represent a duration in terms of
-///   `Dt` for a [`StandardInstruction::Delay`].
+///   `Dt` for a [`StandardInstruction::Delay`].  The payload is unsigned
+///   since durations are lengths of time.
 /// - [`Param::Obj`]: (only used when python is involved). Represents
 ///   parameters that are historically not representable in Rust.
 #[derive(Clone, Debug)]
@@ -69,9 +70,11 @@ pub enum Param {
     /// certain value is shared between operations in a circuit, and will
     /// accept a value right before the circuit runs.
     ParameterExpression(Arc<ParameterExpression>),
-    /// Used for parameters that must only be integers.  For example, the
-    /// `Delay::DT` unit requires this, but gate angles must use `Float`.
-    Int(i64),
+    /// Used for parameters that must only be non-negative integers.  For example, the
+    /// `Delay::DT` unit requires this, but gate angles must use `Float`.  The value is
+    /// unsigned because `dt` durations are lengths of time, and are tracked as `u64`
+    /// throughout Qiskit (including the QPY format's ``DURATION`` payload).
+    Int(u64),
     /// Represents a bound parameter with a real value associated with it.
     /// This, alongside [`Param::ParameterExpression`], is the most common
     /// way a parameter is associated with a [`StandardGate`] in Qiskit,
@@ -157,8 +160,10 @@ impl Param {
             }
             [Self::Int(int), Self::ParameterExpression(expr)]
             | [Self::ParameterExpression(expr), Self::Int(int)] => {
-                let int_as_val: Value = (*int).into();
-                Ok(ParameterExpression::from(int_as_val) == **expr)
+                // `Param::Int` is unsigned while `Value::Int` is signed, so only values that fit
+                // can compare equal; anything larger is simply unequal.
+                let int_as_val: Option<Value> = i64::try_from(*int).ok().map(Value::Int);
+                Ok(int_as_val.map(ParameterExpression::from) == Some((**expr).clone()))
             }
             [Self::Int(int), Self::Obj(obj)] | [Self::Obj(obj), Self::Int(int)] => {
                 Python::attach(|py| obj.bind(py).eq(int))
@@ -220,8 +225,12 @@ impl Param {
                 Value::Int(i) => {
                     if coerce_to_float {
                         Ok(Self::Float(i as f64)) // coerce integer to float
+                    } else if let Ok(int) = u64::try_from(i) {
+                        Ok(Self::Int(int))
                     } else {
-                        Ok(Self::Int(i))
+                        // Negative integers cannot be represented by the unsigned `Param::Int`,
+                        // so keep the full expression around instead.
+                        Ok(Self::ParameterExpression(Arc::new(expr)))
                     }
                 }
                 Value::Real(f) => Ok(Self::Float(f)),
@@ -247,12 +256,13 @@ impl Param {
         Ok(if ob.is_instance_of::<PyFloat>() {
             Param::Float(ob.extract()?)
         } else if ob.is_instance_of::<PyInt>() {
-            if let Ok(int) = ob.extract() {
+            if let Ok(int) = ob.extract::<u64>() {
                 Param::Int(int)
             } else {
-                // This catch leaves bigints as Python objects, rather than coercing them. We may
-                // decide to change this, and have tighter limits once we have specialized uses of
-                // `extract_no_coerce` so we can be more sure of the context.
+                // This catch leaves bigints and negative integers as Python objects, rather than
+                // coercing them. We may decide to change this, and have tighter limits once we
+                // have specialized uses of `extract_no_coerce` so we can be more sure of the
+                // context.
                 Param::Obj(ob.to_owned().unbind())
             }
         } else if let Ok(py_expr) = PyParameterExpression::extract_coerce(ob) {
@@ -260,7 +270,7 @@ impl Param {
                 let Value::Int(int) = py_expr.inner.try_to_value(true)? else {
                     return Ok(Param::Obj(ob.to_owned().unbind()));
                 };
-                Param::Int(int)
+                Param::Int(u64::try_from(int)?)
             }
             // don't get confused by the `coerce` name here -- we promise to not coerce to
             // Param::Float. But if it's complex we need to store it as an Obj.

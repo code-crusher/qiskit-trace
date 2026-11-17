@@ -10,6 +10,7 @@
 // copyright notice, and modified files need to carry a notice indicating
 // that they have been altered from the originals.
 
+use std::fmt::Display;
 use std::sync::Arc;
 
 use crate::ast::{
@@ -1362,7 +1363,7 @@ fn float_to_duration_literal(
 }
 
 fn int_to_duration_literal(
-    val: i64,
+    val: impl TryInto<u64> + Copy + Display,
     unit: DelayUnit,
 ) -> Result<DurationLiteral, QASM3ExporterError> {
     // Any param with an integer value should only be reserved for DT

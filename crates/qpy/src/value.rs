@@ -300,6 +300,7 @@ pub struct QPYReadData {
 pub enum ValueType {
     Bool = b'b',
     Integer = b'i', // this is also used by "BigInt" which may arise in more specialized contexts
+    UnsignedInteger = b'u',
     Float = b'f',
     Complex = b'c',
     CaseDefault = b'd',
@@ -321,6 +322,7 @@ pub(crate) fn type_name(type_key: &ValueType) -> String {
     String::from(match type_key {
         ValueType::Bool => "boolean",
         ValueType::Integer => "integer",
+        ValueType::UnsignedInteger => "unsigned integer",
         ValueType::Float => "float",
         ValueType::Complex => "complex",
         ValueType::CaseDefault => "case default",
@@ -480,6 +482,9 @@ where
 pub enum GenericValue {
     Bool(bool),
     Int64(i64),
+    /// An unsigned 64-bit integer.  This is used for `Delay` durations in terms of `dt`,
+    /// which are natively unsigned; `Int64` remains the encoding for every other integer.
+    UInt64(u64),
     BigInt(BigUint),
     Float64(f64),
     Complex64(Complex64),
@@ -509,11 +514,14 @@ impl GenericValue {
     pub(crate) fn as_typed<T: FromGenericValue>(&self) -> Result<Option<T>, QpyError> {
         T::from_generic(self)
     }
-    // reintreprets int64 and float64 as if they were given in little endian, since this is needed when encoding instruction parameters
+    // reintreprets int64, uint64 and float64 as if they were given in little endian, since this is needed when encoding instruction parameters
     pub(crate) fn as_le(&self) -> Self {
         match self {
             GenericValue::Int64(value) => {
                 GenericValue::Int64(i64::from_le_bytes(value.to_be_bytes()))
+            }
+            GenericValue::UInt64(value) => {
+                GenericValue::UInt64(u64::from_le_bytes(value.to_be_bytes()))
             }
             GenericValue::Float64(value) => {
                 GenericValue::Float64(f64::from_le_bytes(value.to_be_bytes()))
@@ -691,6 +699,16 @@ pub(crate) fn load_value(
                 load_biguint_value(bytes)
             }
         }
+        ValueType::UnsignedInteger => {
+            let mut bytes_array: [u8; 8] = [0; 8];
+            for (idx, byte) in bytes.iter().enumerate() {
+                bytes_array[idx] = *byte;
+            }
+            match endian.resolve(qpy_data.version) {
+                Endian::Little => Ok(GenericValue::UInt64(u64::from_le_bytes(bytes_array))),
+                Endian::Big => Ok(GenericValue::UInt64(u64::from_be_bytes(bytes_array))),
+            }
+        }
         ValueType::Float => {
             let value: f64 = bytes.try_to_f64(endian.resolve(qpy_data.version))?;
             Ok(GenericValue::Float64(value))
@@ -790,6 +808,23 @@ pub(crate) fn serialize_generic_value(
     Ok(match value {
         GenericValue::Bool(value) => (ValueType::Bool, value.into()),
         GenericValue::Int64(value) => (ValueType::Integer, value.into()),
+        // Unsigned values that fit a signed 64-bit integer are written with the legacy ``'i'``
+        // key so that every existing reader can still understand them; only values in the
+        // unsigned-only range above ``i64::MAX`` need the ``'u'`` key, which was introduced in
+        // version 19.
+        GenericValue::UInt64(value) => match i64::try_from(*value) {
+            Ok(value) => (ValueType::Integer, value.to_be_bytes().into()),
+            Err(_) => {
+                if qpy_data.version < 19 {
+                    return Err(QpyError::UnsupportedFeatureForVersion {
+                        feature: String::from("unsigned 64-bit integers above i64::MAX"),
+                        version: qpy_data.version,
+                        min_version: 19,
+                    });
+                }
+                (ValueType::UnsignedInteger, value.to_be_bytes().into())
+            }
+        },
         GenericValue::BigInt(bigint) => (ValueType::Integer, serialize(&pack_biguint(bigint))?),
         GenericValue::Float64(value) => (ValueType::Float, value.into()),
         GenericValue::Complex64(value) => (ValueType::Complex, value.into()),
@@ -1105,7 +1140,7 @@ fn pack_expression_type(exp_type: &Type, version: u8) -> Result<ExpressionType, 
 
 pub(crate) fn pack_duration(duration: &Duration) -> DurationPack {
     match duration {
-        Duration::dt(dt) => DurationPack::DT(*dt as u64),
+        Duration::dt(dt) => DurationPack::DT(*dt),
         Duration::ps(ps) => DurationPack::PS(*ps),
         Duration::ns(ns) => DurationPack::NS(*ns),
         Duration::us(us) => DurationPack::US(*us),
@@ -1116,7 +1151,7 @@ pub(crate) fn pack_duration(duration: &Duration) -> DurationPack {
 
 pub(crate) fn unpack_duration(duration_pack: DurationPack) -> Duration {
     match duration_pack {
-        DurationPack::DT(dt) => Duration::dt(dt as i64),
+        DurationPack::DT(dt) => Duration::dt(dt),
         DurationPack::PS(ps) => Duration::ps(ps),
         DurationPack::NS(ns) => Duration::ns(ns),
         DurationPack::US(us) => Duration::us(us),

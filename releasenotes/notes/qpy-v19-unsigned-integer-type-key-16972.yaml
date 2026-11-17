@@ -1,0 +1,14 @@
+---
+upgrade_qpy:
+  - |
+    QPY version 19 adds a dedicated type key ``'u'`` for unsigned 64-bit
+    integers, used for values that do not fit in a signed 64-bit integer.
+    This lets QPY serialize ``dt``-unit :class:`~.circuit.Delay` durations
+    anywhere in the full ``u64`` range (up to 18,446,744,073,709,551,615)
+    without truncation or coercion to floats, fixing
+    `#16972 <https://github.com/Qiskit/qiskit/issues/16972>`__.
+    Values that fit in a signed 64-bit integer are still written with the
+    legacy ``'i'`` type key, so existing QPY files are unaffected.  Dumping
+    a value above ``i64::MAX`` while targeting a QPY version below 19 now
+    raises :class:`.UnsupportedFeatureForVersion` instead of writing a type
+    key that older readers cannot parse.

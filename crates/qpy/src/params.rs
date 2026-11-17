@@ -625,16 +625,35 @@ pub(crate) fn pack_param_obj(
         Param::Obj(py_object) => qpy_data.caller.attach("Python parameter", |py| {
             py_pack_param(py_object.bind(py), qpy_data, endian)
         })?,
-        Param::Int(int) => match resolved {
-            Endian::Little => formats::GenericDataPack {
-                type_key: ValueType::Integer,
-                data: int.to_le_bytes().into(),
-            },
-            Endian::Big => formats::GenericDataPack {
-                type_key: ValueType::Integer,
-                data: int.to_be_bytes().into(),
-            },
-        },
+        Param::Int(int) => {
+            // Durations in `dt` are unsigned.  Values that fit in a signed 64-bit integer are
+            // still written with the legacy ``'i'`` key so that older readers understand every
+            // file with in-range durations; only values in the unsigned-only range above
+            // ``i64::MAX`` need the ``'u'`` key, which was introduced in version 19.
+            let type_key = match i64::try_from(*int) {
+                Ok(_) => ValueType::Integer,
+                Err(_) => {
+                    if qpy_data.version < 19 {
+                        return Err(QpyError::UnsupportedFeatureForVersion {
+                            feature: String::from("unsigned 64-bit integers above i64::MAX"),
+                            version: qpy_data.version,
+                            min_version: 19,
+                        });
+                    }
+                    ValueType::UnsignedInteger
+                }
+            };
+            match resolved {
+                Endian::Little => formats::GenericDataPack {
+                    type_key,
+                    data: int.to_le_bytes().into(),
+                },
+                Endian::Big => formats::GenericDataPack {
+                    type_key,
+                    data: int.to_be_bytes().into(),
+                },
+            }
+        }
     })
 }
 
@@ -644,7 +663,13 @@ pub(crate) fn generic_value_to_param(
 ) -> Result<Param, QpyError> {
     match value {
         GenericValue::Float64(float_val) => Ok(Param::Float(*float_val)),
-        GenericValue::Int64(int_val) => Ok(Param::Int(*int_val)),
+        // `Param::Int` is unsigned, so a negative integer can only be a general parameter
+        // value; those have always been coerced to floats on the Rust side.
+        GenericValue::Int64(int_val) => Ok(match u64::try_from(*int_val) {
+            Ok(int_val) => Param::Int(int_val),
+            Err(_) => Param::Float(*int_val as f64),
+        }),
+        GenericValue::UInt64(int_val) => Ok(Param::Int(*int_val)),
         GenericValue::ParameterExpressionSymbol(symbol) => {
             let parameter_expression = ParameterExpression::from_arc_symbol(symbol.clone());
             Ok(Param::ParameterExpression(Arc::new(parameter_expression)))
