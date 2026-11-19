@@ -27,6 +27,7 @@ import ddt
 
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter, ParameterVector, ParameterExpression
+from qiskit.circuit.exceptions import CircuitError
 from qiskit.utils.optionals import HAS_SYMPY
 
 param_x = Parameter("x")
@@ -1149,3 +1150,146 @@ class TestParameterExpression(QiskitTestCase):
                 expected = coeff * param_x + const
 
                 self.assertStructurallyEqual(expression, expected)
+
+    @unittest.skipUnless(HAS_SYMPY, "Sympy is required for this test")
+    def test_from_sympy_roundtrip(self):
+        """Test converting Sympy expressions back into parameter expressions."""
+        import sympy
+
+        x, y = sympy.Symbol("x"), sympy.Symbol("y")
+        parameter_map = {x: param_x, y: param_y}
+
+        expected = {
+            x + y: param_x + param_y,
+            x * y: param_x * param_y,
+            x / y: param_x / param_y,
+            x - y: param_x - param_y,
+            x**2: param_x**2,
+            2**x: 2**param_x,
+            -x: -param_x,
+            x / 2: param_x / 2,
+            2 - x: 2 - param_x,
+            2 / x: 2 / param_x,
+            sympy.sin(x): param_x.sin(),
+            sympy.cos(x): param_x.cos(),
+            sympy.tan(x): param_x.tan(),
+            sympy.asin(x): param_x.arcsin(),
+            sympy.acos(x): param_x.arccos(),
+            sympy.atan(x): param_x.arctan(),
+            sympy.exp(x): param_x.exp(),
+            sympy.log(x): param_x.log(),
+            sympy.Abs(x): param_x.abs(),
+            sympy.sign(x): param_x.sign(),
+            sympy.conjugate(x): param_x.conjugate(),
+            sympy.sin(x) * sympy.cos(y): param_x.sin() * param_y.cos(),
+            1 / (x * y): 1 / (param_x * param_y),
+            x / (y + 1): param_x / (param_y + 1),
+            x**y: param_x**param_y,
+        }
+        for sympy_expr, parameter_expr in expected.items():
+            with self.subTest(expr=str(sympy_expr)):
+                converted = ParameterExpression.from_sympy(sympy_expr, parameter_map)
+                # Sympy reorders the arguments of non-commutative-product-like Muls, so the
+                # exact operation tree of the converted expression is not guaranteed to match
+                # the one written here; compare the canonical Sympy forms instead, which is
+                # exactly the ``from_sympy(sympify(e)) == e`` roundtrip contract.
+                self.assertEqual(converted.sympify(), parameter_expr.sympify())
+
+    @unittest.skipUnless(HAS_SYMPY, "Sympy is required for this test")
+    def test_from_sympy_no_parameters(self):
+        """Test that symbols are replaced by fresh parameters if no mapping is given."""
+        import sympy
+
+        expr = ParameterExpression.from_sympy(sympy.Symbol("x") * 2 + sympy.Symbol("y"))
+        self.assertEqual({p.name for p in expr.parameters}, {"x", "y"})
+
+    @unittest.skipUnless(HAS_SYMPY, "Sympy is required for this test")
+    def test_from_sympy_name_keys(self):
+        """Test that the parameters mapping accepts symbol names as keys."""
+        import sympy
+
+        expr = ParameterExpression.from_sympy(sympy.Symbol("x") + 1, {param_x.name: param_x})
+        self.assertEqual(expr, param_x + 1)
+        self.assertEqual(expr.parameters, {param_x})
+
+    @unittest.skipUnless(HAS_SYMPY, "Sympy is required for this test")
+    def test_from_sympy_vector_elements(self):
+        """Test mapping Sympy symbols to ParameterVectorElements via the parameters mapping."""
+        import sympy
+
+        vec = ParameterVector("v", 2)
+        s0, s1 = sympy.Symbol("v[0]"), sympy.Symbol("v[1]")
+        expr = ParameterExpression.from_sympy(s0 + s1 * 2, {s0: vec[0], s1: vec[1]})
+        self.assertEqual(expr, vec[0] + vec[1] * 2)
+        self.assertEqual(expr.parameters, set(vec))
+
+    @unittest.skipUnless(HAS_SYMPY, "Sympy is required for this test")
+    def test_from_sympy_numeric(self):
+        """Test converting Sympy expressions containing only numbers."""
+        import sympy
+
+        cases = [
+            (sympy.Integer(5), 5),
+            (sympy.Float(2.5), 2.5),
+            (sympy.Rational(1, 2), 0.5),
+            (sympy.Integer(2) + 3 * sympy.I, 2 + 3j),
+        ]
+        for sympy_expr, value in cases:
+            with self.subTest(expr=str(sympy_expr)):
+                expr = ParameterExpression.from_sympy(sympy_expr)
+                self.assertIsInstance(expr, ParameterExpression)
+                self.assertEqual(expr.numeric(), value)
+
+    @unittest.skipUnless(HAS_SYMPY, "Sympy is required for this test")
+    def test_from_sympy_bind(self):
+        """Test that a converted expression binds values like its Sympy counterpart evaluates."""
+        import sympy
+
+        x, y = sympy.Symbol("x"), sympy.Symbol("y")
+        expr = ParameterExpression.from_sympy(
+            x**2 + sympy.sin(y) + 2 * x - 1, {x: param_x, y: param_y}
+        )
+        self.assertEqual(expr, param_x**2 + param_y.sin() + 2 * param_x - 1)
+        self.assertAlmostEqual(expr.bind({param_x: 1.5, param_y: 0.3}).numeric(), 4.545520206661339)
+
+    @unittest.skipUnless(HAS_SYMPY, "Sympy is required for this test")
+    def test_from_sympy_invalid_input(self):
+        """Test error messages raised for unsupported Sympy expressions."""
+        import sympy
+
+        with self.assertRaises(CircuitError):
+            ParameterExpression.from_sympy("x + 2")
+        with self.assertRaises(CircuitError):
+            ParameterExpression.from_sympy(sympy.gamma(sympy.Symbol("x")))
+        with self.assertRaises(CircuitError):
+            ParameterExpression.from_sympy(sympy.Mod(sympy.Symbol("x"), 2))
+        with self.assertRaises(CircuitError):
+            ParameterExpression.from_sympy(sympy.Symbol("x") > 2)
+        with self.assertRaises(CircuitError):
+            ParameterExpression.from_sympy(sympy.Symbol("x"), {sympy.Symbol("x"): "x"})
+
+    @unittest.skipUnless(HAS_SYMPY, "Sympy is required for this test")
+    def test_sympify_from_sympy_inverse(self):
+        """Test that from_sympy inverts sympify."""
+        import sympy
+
+        expression = (param_x + param_y.sin() * 0.25) * param_x**2 - 2 / param_x + 1
+        rebuilt = ParameterExpression.from_sympy(
+            expression.sympify(), {sympy.Symbol("x"): param_x, sympy.Symbol("y"): param_y}
+        )
+        self.assertEqual(rebuilt.sympify(), expression.sympify())
+        self.assertEqual(rebuilt.parameters, expression.parameters)
+        self.assertEqual(rebuilt.bind({param_x: 3, param_y: 0.1}).numeric(), 27.557958520788695)
+
+    @unittest.skipUnless(HAS_SYMPY, "Sympy is required for this test")
+    def test_sympify_numeric_base_pow(self):
+        """Test sympify of a power with a numeric base and a symbolic exponent.
+
+        Regression test: this used to return ``NotImplemented`` instead of a Sympy expression.
+        """
+        import sympy
+
+        expr = 2**param_x
+        self.assertEqual(expr.sympify(), sympy.Integer(2) ** sympy.Symbol("x"))
+        expr = 2.5**param_x
+        self.assertEqual(expr.sympify(), sympy.Float(2.5) ** sympy.Symbol("x"))

@@ -1,0 +1,11 @@
+---
+features:
+  - |
+    Added :meth:`.ParameterExpression.from_sympy`, the inverse of
+    :meth:`.ParameterExpression.sympify`. This classmethod converts a raw Sympy expression
+    into a :class:`.ParameterExpression`, mapping Sympy symbols to
+    :class:`.Parameter` instances either by an explicit ``parameters`` mapping
+    (accepting symbols, symbol names or :class:`.ParameterVector` elements) or, for any
+    unmapped symbol, by creating a fresh parameter with the same name. Also fixed a bug in
+    :meth:`.ParameterExpression.sympify` where a power with a numeric base and a symbolic
+    exponent, such as ``2**x``, raised an error instead of returning a Sympy expression.

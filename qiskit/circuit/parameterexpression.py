@@ -15,7 +15,9 @@ ParameterExpression Class to enable creating simple expressions of Parameters.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 
+from qiskit.circuit.exceptions import CircuitError
 from qiskit.utils.optionals import HAS_SYMPY
 import qiskit._accelerate.circuit
 
@@ -121,7 +123,7 @@ def sympify(expression):
                 # For RSUB: rhs - lhs (construct subtraction directly: 2 - a)
                 if inst.op == OpCode.RPOW:
                     # Rust already swapped operands, so we use __pow__ directly: rhs ** lhs
-                    stack.append(getattr(rhs, "__pow__")(lhs))
+                    stack.append(rhs**lhs)
                 elif inst.op == OpCode.RDIV:
                     # Construct division directly: rhs / lhs (e.g., 2 / a)
                     # Use sympy's division operator to handle the case where
@@ -161,6 +163,161 @@ def sympify(expression):
                 stack.append(getattr(sympy, method_str)(lhs))
 
     return stack.pop()
+
+
+# Mapping from the names of Sympy functions that can appear in a Sympy expression to the
+# corresponding method of :class:`.ParameterExpression`.
+_SYMPY_FUNCTION_MAP = {
+    "sin": "sin",
+    "cos": "cos",
+    "tan": "tan",
+    "asin": "arcsin",
+    "acos": "arccos",
+    "atan": "arctan",
+    "exp": "exp",
+    "log": "log",
+    "Abs": "abs",
+    "sign": "sign",
+    "conjugate": "conjugate",
+}
+
+
+@HAS_SYMPY.require_in_call
+def from_sympy(
+    expression,
+    parameters: Mapping | None = None,
+):
+    """Convert a Sympy expression into a :class:`.ParameterExpression`.
+
+    This is the inverse of :func:`.sympify`: it rebuilds a native Qiskit
+    :class:`.ParameterExpression` out of a raw Sympy expression. The Sympy symbols in the
+    expression are matched to :class:`.Parameter` instances by name.
+
+    Args:
+        expression: A Sympy expression. It must contain only :class:`~sympy.Symbol`\\ s, numbers
+            and the operations supported by :class:`.ParameterExpression` (arithmetic, powers and
+            ``sin``, ``cos``, ``tan``, ``asin``, ``acos``, ``atan``, ``exp``, ``log``, ``Abs``,
+            ``sign`` and ``conjugate``).
+        parameters: An optional mapping of Sympy symbol names (or Sympy symbols) to the
+            :class:`.Parameter` instances they should be represented by. This can be used to
+            match symbols to existing :class:`.Parameter` objects, for example those of a
+            :class:`.ParameterVector`. A mapping value may also be a
+            :class:`.ParameterExpression` or a real or complex number, in which case the symbol
+            is substituted with it. Any symbol not present in the mapping is replaced by a
+            fresh :class:`.Parameter` with the same name.
+
+    Returns:
+        The converted :class:`.ParameterExpression`.
+
+    Raises:
+        CircuitError: If the expression is not a Sympy expression, contains Sympy functions
+            that have no :class:`.ParameterExpression` equivalent, or the ``parameters``
+            mapping contains values of an unsupported type.
+    """
+    import sympy
+
+    if not isinstance(expression, sympy.Expr):
+        raise CircuitError(
+            "The expression to convert must be a Sympy expression, "
+            f"not '{type(expression).__name__}'."
+        )
+
+    symbol_map: dict[str, Parameter | ParameterExpression | int | float | complex] = {}
+    if parameters is not None:
+        for key, value in parameters.items():
+            if not isinstance(value, (Parameter, ParameterExpression, int, float, complex)):
+                raise CircuitError(
+                    f"Cannot map the Sympy symbol '{key}' to an object of type "
+                    f"'{type(value).__name__}'; expected a Parameter, ParameterExpression or "
+                    "a number."
+                )
+            name = key.name if isinstance(key, sympy.Symbol) else str(key)
+            symbol_map[name] = value
+
+    def _power(base, exp):
+        """Build ``base ** exp`` for the raw Sympy exponent ``exp``, avoiding no-op powers of
+        one and rebuilding negative powers as divisions; symbolic exponents are converted."""
+        if exp.is_Number:
+            exp = int(exp) if exp.is_Integer else float(exp)
+            if exp < 0:
+                out = base
+                if exp < -1:
+                    out = base ** (-exp)
+                return 1 / out
+            if exp == 1:
+                return base
+            return base**exp
+        return base ** convert(exp)
+
+    def convert(node):
+        if isinstance(node, sympy.Symbol):
+            name = node.name
+            if (param := symbol_map.get(name)) is None:
+                param = symbol_map[name] = Parameter(name)
+            return param
+        if isinstance(node, sympy.Number):
+            # This covers ``Integer``, ``Float``, ``Rational`` and things like ``nan`` or ``oo``.
+            if node.is_Integer:
+                return int(node)
+            if node.is_Float:
+                return float(node)
+            return float(node)
+        if isinstance(node, sympy.NumberSymbol):
+            # Irrational constants like ``pi`` and ``E`` are approximated numerically, as
+            # :class:`.ParameterExpression` has no exact representation for them.
+            return float(node)
+        if node is sympy.I:
+            return complex(node)
+        if isinstance(node, sympy.Add):
+            terms = [convert(term) for term in node.args]
+            out = terms[0]
+            for term in terms[1:]:
+                out = out + term
+            return out
+        if isinstance(node, sympy.Mul):
+            # A Sympy ``Mul`` represents division as a multiplication by a negative power (for
+            # symbols) or by a non-integer rational coefficient (for numbers), so separate the
+            # arguments into numerators and denominators to rebuild the divisions.
+            numerator, denominator = [], []
+            coeff_numerator, coeff_denominator = 1, 1
+            for arg in node.args:
+                if isinstance(arg, sympy.Rational):
+                    if arg.is_Integer:
+                        numerator.append(convert(arg))
+                    else:
+                        coeff_numerator *= int(arg.p)
+                        coeff_denominator *= int(arg.q)
+                elif isinstance(arg, sympy.Pow) and arg.exp.is_Number and arg.exp.is_negative:
+                    denominator.append((arg.base, -arg.exp))
+                else:
+                    numerator.append(convert(arg))
+            out = coeff_numerator
+            for term in numerator:
+                out = out * term
+            if coeff_denominator != 1 or denominator:
+                denominator_expr = coeff_denominator
+                for base, exp in denominator:
+                    denominator_expr = denominator_expr * _power(convert(base), exp)
+                out = out / denominator_expr
+            return out
+        if isinstance(node, sympy.Pow):
+            return _power(convert(node.base), node.exp)
+        if isinstance(node, sympy.Expr) and node.func.__name__ in _SYMPY_FUNCTION_MAP:
+            if len(node.args) != 1:
+                raise CircuitError(
+                    f"Cannot convert the Sympy function '{node.func.__name__}' with "
+                    f"{len(node.args)} arguments to a ParameterExpression."
+                )
+            return getattr(convert(node.args[0]), _SYMPY_FUNCTION_MAP[node.func.__name__])()
+        raise CircuitError(
+            f"Cannot convert the Sympy expression '{node}' of type '{type(node).__name__}' "
+            "to a ParameterExpression; the type is not supported."
+        )
+
+    result = convert(expression)
+    if isinstance(result, (int, float, complex)):
+        result = ParameterExpression._Value(result)
+    return result
 
 
 # Redefine the type so external imports get an evaluated reference; Sphinx needs this to understand

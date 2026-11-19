@@ -33,7 +33,10 @@ use pyo3::types::{
 use pyo3::{IntoPyObjectExt, intern};
 
 use crate::circuit_data::CircuitError;
-use crate::imports::{BUILTIN_HASH, SYMPIFY_PARAMETER_EXPRESSION, UUID, WARNINGS_WARN};
+use crate::imports::{
+    BUILTIN_HASH, FROM_SYMPY_PARAMETER_EXPRESSION, SYMPIFY_PARAMETER_EXPRESSION, UUID,
+    WARNINGS_WARN,
+};
 use crate::parameter::symbol_expr::{self, SymbolExpr, SymbolVector};
 use crate::parameter::symbol_parser::parse_expression;
 use qiskit_util::IndexSet;
@@ -928,6 +931,27 @@ impl PyParameterExpression {
     pub fn sympify(&self, py: Python) -> PyResult<Py<PyAny>> {
         let py_sympify = SYMPIFY_PARAMETER_EXPRESSION.get(py);
         py_sympify.call1(py, (self.clone(),))
+    }
+
+    /// Convert a SymPy expression into a :class:`.ParameterExpression`.
+    ///
+    /// Args:
+    ///     expression: The raw SymPy expression to convert.  See
+    ///         :func:`.qiskit.circuit.parameterexpression.from_sympy` for the accepted forms.
+    ///     parameters: An optional mapping of Sympy symbol names to the :class:`.Parameter`
+    ///         instances they should be represented by.
+    ///
+    /// Returns:
+    ///     A :class:`.ParameterExpression` equivalent of the given expression.
+    #[staticmethod]
+    #[pyo3(signature = (expression, parameters = None))]
+    pub fn from_sympy(
+        py: Python,
+        expression: Bound<PyAny>,
+        parameters: Option<Bound<PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        let py_from_sympy = FROM_SYMPY_PARAMETER_EXPRESSION.get(py);
+        py_from_sympy.call1(py, (expression, parameters))
     }
 
     /// The number of unbound parameters in the expression.

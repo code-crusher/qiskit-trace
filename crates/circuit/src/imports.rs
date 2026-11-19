@@ -136,6 +136,8 @@ pub static TRANSPILER_LAYOUT: ImportOnceCell =
 pub static LAYOUT: ImportOnceCell = ImportOnceCell::new("qiskit.transpiler.layout", "Layout");
 pub static SYMPIFY_PARAMETER_EXPRESSION: ImportOnceCell =
     ImportOnceCell::new("qiskit.circuit.parameterexpression", "sympify");
+pub static FROM_SYMPY_PARAMETER_EXPRESSION: ImportOnceCell =
+    ImportOnceCell::new("qiskit.circuit.parameterexpression", "from_sympy");
 pub static TRANSPILE_LAYOUT: ImportOnceCell =
     ImportOnceCell::new("qiskit.transpiler.layout", "TranspileLayout");
 pub static STORE: ImportOnceCell = ImportOnceCell::new("qiskit.circuit.store", "Store");
