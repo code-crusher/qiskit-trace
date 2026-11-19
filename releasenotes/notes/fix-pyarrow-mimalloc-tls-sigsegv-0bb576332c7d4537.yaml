@@ -1,0 +1,13 @@
+---
+fixes:
+  - |
+    Fixed a segmentation fault that could occur on macOS when Qiskit was used in
+    the same process as another extension module that also statically links
+    version 3 of the ``mimalloc`` allocator, most notably PyArrow 24.  Qiskit's
+    copy of ``mimalloc`` kept its thread-local heap pointer in a hard-coded TLS
+    slot that is shared by every copy of ``mimalloc`` in the process, so the two
+    copies could end up walking and freeing each other's heaps.  Qiskit now
+    builds ``mimalloc`` with its ``pthread_getspecific``-based thread-local
+    storage backend on macOS, which is what ``mimalloc`` 3.4 and later use by
+    default, so several copies can safely coexist.  See
+    `#16925 <https://github.com/Qiskit/qiskit/issues/16925>`__.

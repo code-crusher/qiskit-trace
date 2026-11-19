@@ -10,4 +10,7 @@ include test/python/visualization/references/*.png
 
 include Cargo.toml
 include Cargo.lock
+# The Cargo configuration holds the build flags for the C dependencies, so it must be present when
+# building from the sdist.
+include .cargo/config.toml
 recursive-include crates *

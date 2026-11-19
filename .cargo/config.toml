@@ -9,3 +9,17 @@ rustflags = [
   "-C", "link-arg=-undefined",
   "-C", "link-arg=dynamic_lookup",
 ]
+
+[env]
+# On macOS, mimalloc 3 keeps its thread-local heap pointers in the hard-coded
+# TLS slots 108 and 109 whenever it can reach the thread control block
+# directly.  Those slots are shared by the whole process, so two independent
+# copies of mimalloc (for example the one statically linked into
+# `qiskit._accelerate` and the one bundled with PyArrow 24) read and free each
+# other's heaps, which segfaults the interpreter.  Defining `MI_HAS_TLS_SLOT=0`
+# selects mimalloc's portable `pthread_getspecific` backend instead, which is
+# also what mimalloc 3.4 and later use by default on macOS.
+# See https://github.com/Qiskit/qiskit/issues/16925 and
+# https://github.com/microsoft/mimalloc/issues/1327.
+CFLAGS_aarch64-apple-darwin = "-DMI_HAS_TLS_SLOT=0"
+CFLAGS_x86_64-apple-darwin = "-DMI_HAS_TLS_SLOT=0"
