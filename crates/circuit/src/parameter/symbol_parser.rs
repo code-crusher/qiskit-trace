@@ -32,7 +32,20 @@ use super::symbol_expr::Symbol;
 
 // parsing value as real
 fn parse_value(s: &str) -> IResult<&str, SymbolExpr, VerboseError<&str>> {
-    double.map(|v| SymbolExpr::Value(Value::Real(v))).parse(s)
+    recognize(double)
+        .map(|text: &str| {
+            // Integer literals become `Value::Int` to match how Qiskit's arithmetic operations
+            // coerce Python integers; this makes the canonical form of the parsed expression
+            // match an equivalent one built by arithmetic (e.g. `x/2` stays a division instead
+            // of being rewritten to `0.5*x`).
+            match text.parse::<i64>() {
+                Ok(v) => SymbolExpr::Value(Value::Int(v)),
+                // `nom`'s `double` only succeeds if the matched text is itself parseable by
+                // `str::parse::<f64>`, so this cannot fail.
+                Err(_) => SymbolExpr::Value(Value::Real(text.parse::<f64>().unwrap())),
+            }
+        })
+        .parse(s)
 }
 
 // parsing imaginary part of complex number as real
@@ -87,7 +100,7 @@ fn parse_unary<'a>(
                 "log" => UnaryOp::Log,
                 "exp" => UnaryOp::Exp,
                 "sign" => UnaryOp::Sign,
-                "conjugate" => UnaryOp::Conj,
+                "conjugate" | "conj" => UnaryOp::Conj,
                 "abs" => UnaryOp::Abs,
                 &_ => return Err("unsupported unary operation found."),
             };

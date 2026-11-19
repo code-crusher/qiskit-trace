@@ -13,6 +13,7 @@
 use hashbrown::hash_map::Entry;
 use hashbrown::{HashMap, HashSet};
 use num_complex::Complex64;
+use std::cell::RefCell;
 use std::sync::{Arc, atomic};
 use thiserror::Error;
 use uuid::Uuid;
@@ -864,7 +865,7 @@ impl PyParameterExpression {
     /// This is a **strictly internal** constructor and **should not be used**.
     /// It is subject to arbitrary change in between Qiskit versions and cannot be relied on.
     /// Parameter expressions should always be constructed from applying operations on
-    /// parameters, or by loading via QPY.
+    /// parameters, by loading via QPY, or by the public :meth:`from_string` parser.
     #[new]
     #[pyo3(signature = (name_map, expr))]
     pub fn py_new(name_map: HashMap<String, PyParameter>, expr: String) -> PyResult<Self> {
@@ -882,6 +883,102 @@ impl PyParameterExpression {
     #[staticmethod]
     pub fn _Value(value: &Bound<PyAny>) -> PyResult<Self> {
         Self::extract_coerce(value.as_borrowed())
+    }
+
+    /// Parse a string into a parameter expression.
+    ///
+    /// This is Qiskit's parser for its own :class:`.ParameterExpression` string format, which is
+    /// the format produced by :func:`str` on a :class:`.ParameterExpression`.  It is intended for
+    /// interoperability with other symbolic-expression libraries that can produce the same string
+    /// format, such as when converting from SymPy or SymEngine objects.  It is a small recursive
+    /// parser that only accepts the operators and functions that :class:`.ParameterExpression`
+    /// itself supports; in particular, it never evaluates any part of the string as Python code.
+    ///
+    /// The grammar understood is:
+    ///
+    /// * the binary operators ``+``, ``-``, ``*``, ``/`` and ``**``, with the usual mathematical
+    ///   precedence, and parentheses for grouping.
+    /// * the unary functions ``sin``, ``cos``, ``tan``, ``asin``, ``acos``, ``atan``, ``exp``,
+    ///   ``log``, ``sign``, ``conj``/``conjugate`` and ``abs``.
+    /// * integer, real and imaginary literals, such as ``3``, ``-1.5`` or ``2.0j``.
+    /// * bare names, which refer to the entries of the ``parameters`` mapping.  These must match
+    ///   the regular expression ``[a-zA-Z_\\$][a-zA-Z0-9_\\$]*`` optionally followed by an
+    ///   integer in square brackets (for :class:`.ParameterVectorElement`).
+    ///
+    /// Args:
+    ///     expression: the string to parse.
+    ///     parameters: a mapping of the names that may appear in ``expression`` to the
+    ///         :class:`.Parameter` instances they should resolve to.  Mapping entries whose names
+    ///         do not occur in ``expression`` are ignored.  This argument is optional; if it is
+    ///         omitted, the ``expression`` must be purely numeric.
+    ///
+    /// Returns:
+    ///     The parsed expression.  Its :attr:`parameters` are exactly the mapped
+    ///     :class:`.Parameter` instances that ``expression`` referred to.
+    ///
+    /// Raises:
+    ///     ValueError: if ``expression`` could not be parsed, or if it contains a name that is not
+    ///         a key of ``parameters``.
+    ///
+    /// .. warning::
+    ///
+    ///     The regular-expression grammar above means that :class:`.Parameter` instances whose
+    ///     names contain characters outside those classes (such as spaces) cannot be referenced
+    ///     from within the string.
+    ///
+    ///     The parser itself does not execute any code from ``expression``, but neither is it
+    ///     hardened against pathological input: memory use grows with the size and nesting depth
+    ///     of the string, so it is not suitable for completely untrusted input.
+    ///
+    /// Examples:
+    ///
+    ///     Parse a string, mapping the names within it onto existing :class:`.Parameter` objects::
+    ///
+    ///         from qiskit.circuit import Parameter, ParameterExpression
+    ///
+    ///         a, b = Parameter("a"), Parameter("b")
+    ///         expr = ParameterExpression.from_string("sin(a) + 2*b", {"a": a, "b": b})
+    ///         assert expr == a.sin() + 2 * b
+    #[pyo3(name = "from_string")]
+    #[classmethod]
+    #[pyo3(signature = (expression, parameters=None))]
+    pub fn py_from_string(
+        _cls: &Bound<'_, pyo3::types::PyType>,
+        expression: &str,
+        parameters: Option<HashMap<String, PyParameter>>,
+    ) -> PyResult<Self> {
+        let symbol_map: HashMap<String, Symbol> = parameters
+            .unwrap_or_default()
+            .iter()
+            .map(|(string, param)| (string.clone(), Symbol::clone(&param.0)))
+            .collect();
+        // The lookup callback cannot propagate errors out of the parser, so we track the names
+        // that we failed to resolve and complain about them afterwards.
+        let missing: RefCell<Vec<&str>> = RefCell::new(Vec::new());
+        let expr = parse_expression(expression, &|name| match symbol_map.get(name) {
+            Some(symbol) => Some(symbol.clone()),
+            None => {
+                missing.borrow_mut().push(name);
+                None
+            }
+        })
+        .map_err(|e| {
+            PyValueError::new_err(format!(
+                "failed to parse the expression {expression:?}: {e}"
+            ))
+        })?;
+        let mut missing = missing.into_inner();
+        if !missing.is_empty() {
+            missing.sort_unstable();
+            missing.dedup();
+            return Err(PyValueError::new_err(format!(
+                "the expression {expression:?} contains the parameter name(s) {missing:?} that are not present in the 'parameters' mapping"
+            )));
+        }
+        // Build the parameter cache from the expression itself, so that it contains exactly the
+        // parameters that the string referred to, and not the whole lookup mapping.
+        let inner = ParameterExpression::from_symbol_expr(expr);
+        Ok(Self { inner })
     }
 
     /// Check if the expression corresponds to a plain symbol.

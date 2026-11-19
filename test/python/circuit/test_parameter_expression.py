@@ -1076,9 +1076,7 @@ class TestParameterExpression(QiskitTestCase):
         n = 100_000
         a = Parameter("a")
         expr_str = "a" + " ** a" * n
-        # This is an explicitly private constructor, but the purpose of the test is for _any_ string
-        # constructor; we can change it over to a new API if/when we expose one.
-        out = ParameterExpression({"a": a}, expr_str)
+        out = ParameterExpression.from_string(expr_str, {"a": a})
         expected = a
         for _ in range(n):
             # TODO: actually this seems like a weirdness in the parser: ` ** ` should be
@@ -1149,3 +1147,130 @@ class TestParameterExpression(QiskitTestCase):
                 expected = coeff * param_x + const
 
                 self.assertStructurallyEqual(expression, expected)
+
+
+class TestParameterExpressionFromString(QiskitTestCase):
+    """Test the public string-parsing interface of ``ParameterExpression``."""
+
+    def test_str_roundtrip(self):
+        """The output of ``str`` should be parseable back into an equal expression."""
+        x, y, z = Parameter("x"), Parameter("y"), Parameter("z")
+        vec = ParameterVector("vec", 5)
+        exprs = [
+            x,
+            -x,
+            x + y,
+            x - y,
+            x * y,
+            x / y,
+            x**y,
+            x**2,
+            2**x,
+            1 - x,
+            1 + x,
+            2 * x,
+            x / 2,
+            2 / x,
+            (x + y) * z,
+            (x + 1) / (y - 2),
+            x + y + z - x * y,
+            (x**2 + y**2) / (2 * x * y),
+            x.sin(),
+            x.cos(),
+            x.tan(),
+            x.arcsin(),
+            x.arccos(),
+            x.arctan(),
+            x.log(),
+            x.exp(),
+            x.sign(),
+            x.conjugate(),
+            abs(x),
+            x + 1.5e-3,
+            x * 2.0j,
+            x + complex(1.0, 2.0),
+            vec[0] + 2 * vec[3],
+            vec[0].conjugate() * x,
+        ]
+        parameters = {"x": x, "y": y, "z": z}
+        parameters.update({str(element): element for element in vec})
+        for expr in exprs:
+            with self.subTest(expr=expr):
+                parsed = ParameterExpression.from_string(str(expr), parameters)
+                self.assertTrue(parsed.structurally_equal(expr))
+                self.assertEqual(parsed.parameters, expr.parameters)
+
+    def test_from_string(self):
+        """A simple parsing case gives the expected expression."""
+        a, b = Parameter("a"), Parameter("b")
+        parsed = ParameterExpression.from_string("sin(a) + 2*b", {"a": a, "b": b})
+        self.assertEqual(parsed, a.sin() + 2 * b)
+        self.assertEqual(parsed.parameters, {a, b})
+
+    def test_from_string_numeric(self):
+        """Purely numeric strings can be parsed without any parameter mapping."""
+        parsed = ParameterExpression.from_string("3 * (4 + 2)")
+        self.assertEqual(parsed.numeric(), 18)
+        self.assertEqual(parsed.parameters, set())
+        parsed = ParameterExpression.from_string("2.5e-3 + 1")
+        self.assertEqual(parsed.numeric(), 1.0025)
+
+    def test_from_string_binds_to_parameters(self):
+        """The parsed expression is fully usable with the mapped parameters."""
+        a, b = Parameter("a"), Parameter("b")
+        parsed = ParameterExpression.from_string("a**2 + b", {"a": a, "b": b})
+        self.assertEqual(parsed.bind({a: 3, b: 1.5}), 10.5)
+
+    def test_from_string_remapped_names(self):
+        """The names in the string need not match the names of the parameters."""
+        internal = Parameter("internal_name")
+        parsed = ParameterExpression.from_string("2 * theta", {"theta": internal})
+        self.assertEqual(parsed, 2 * internal)
+        self.assertEqual(parsed.parameters, {internal})
+
+    def test_from_string_extra_parameters(self):
+        """Parameters in the mapping that the expression does not refer to are ignored."""
+        a, b = Parameter("a"), Parameter("b")
+        parsed = ParameterExpression.from_string("a + 1", {"a": a, "b": b})
+        self.assertEqual(parsed, a + 1)
+        # Only the parameters that the string referred to are tracked; 'b' is not a phantom
+        # parameter of the result.
+        self.assertEqual(parsed.parameters, {a})
+        self.assertEqual(parsed.bind({a: 1}).numeric(), 2)
+
+    def test_from_string_vector_elements(self):
+        """Elements of a ``ParameterVector`` can be referenced by their names."""
+        vec = ParameterVector("vec", 4)
+        parsed = ParameterExpression.from_string(
+            "vec[0] + 2 * vec[3]", {"vec[0]": vec[0], "vec[3]": vec[3]}
+        )
+        self.assertEqual(parsed, vec[0] + 2 * vec[3])
+        self.assertEqual(parsed.parameters, {vec[0], vec[3]})
+
+    def test_from_string_conjugate_aliases(self):
+        """Both the ``conj`` and ``conjugate`` spellings of conjugation are accepted."""
+        a = Parameter("a")
+        for spelling in ("conj(a)", "conjugate(a)"):
+            with self.subTest(spelling=spelling):
+                parsed = ParameterExpression.from_string(spelling, {"a": a})
+                self.assertTrue(parsed.structurally_equal(a.conjugate()))
+
+    def test_from_string_missing_parameters(self):
+        """A name in the string without a mapping entry is an error, not a new parameter."""
+        a = Parameter("a")
+        with self.assertRaisesRegex(ValueError, r"parameter name\(s\) .*\"b\""):
+            ParameterExpression.from_string("a + b", {"a": a})
+        with self.assertRaisesRegex(ValueError, r"parameter name\(s\) .*\"a\""):
+            ParameterExpression.from_string("a + 1")
+
+    def test_from_string_malformed(self):
+        """Strings that are not valid expressions raise a useful error."""
+        a = Parameter("a")
+        for bad in ["a +", "**", "sin(a", "a $ b", ""]:
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                ParameterExpression.from_string(bad, {"a": a})
+
+    def test_from_string_empty_mapping(self):
+        """Passing an explicit empty mapping behaves the same as passing none."""
+        parsed = ParameterExpression.from_string("1 + 1", {})
+        self.assertEqual(parsed.numeric(), 2)

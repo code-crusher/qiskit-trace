@@ -1044,10 +1044,28 @@ impl SymbolExpr {
     }
 
     /// Map of parameter name to the parameter.
+    ///
+    /// This uses an explicit heap-allocated stack to walk the expression tree rather than
+    /// recursion, so that it is safe to call on arbitrarily deep trees (which can be produced, for
+    /// example, by the string parser in `symbol_parser`).
     pub fn name_map(&self) -> HashMap<String, Symbol> {
-        self.iter_symbols()
-            .map(|param| (param.repr(false), param.clone()))
-            .collect()
+        let mut name_map = HashMap::new();
+        let mut pending = vec![self];
+        while let Some(expr) = pending.pop() {
+            match expr {
+                SymbolExpr::Symbol(symbol) => {
+                    let symbol = Symbol::clone(symbol.as_ref());
+                    name_map.insert(symbol.repr(false), symbol);
+                }
+                SymbolExpr::Value(_) => {}
+                SymbolExpr::Unary { expr, .. } => pending.push(expr),
+                SymbolExpr::Binary { lhs, rhs, .. } => {
+                    pending.push(lhs);
+                    pending.push(rhs);
+                }
+            }
+        }
+        name_map
     }
 
     /// return all numbers in the equation

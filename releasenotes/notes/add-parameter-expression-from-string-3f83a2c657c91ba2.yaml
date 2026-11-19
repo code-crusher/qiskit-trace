@@ -1,0 +1,20 @@
+---
+features_circuits:
+  - |
+    Added :meth:`.ParameterExpression.from_string`, a public constructor that parses a
+    string into a :class:`.ParameterExpression`.  The accepted grammar is the one produced
+    by ``str()`` on Qiskit's symbolic types, so it can be used to build expressions from
+    the string forms emitted by other symbolic libraries, such as when converting from
+    SymPy or SymEngine objects.  For example::
+
+        from qiskit.circuit import Parameter, ParameterExpression
+
+        a, b = Parameter("a"), Parameter("b")
+        expr = ParameterExpression.from_string("sin(a) + 2*b", {"a": a, "b": b})
+        assert expr == a.sin() + 2 * b
+
+    The second argument maps the names that occur in the string to the
+    :class:`.Parameter` instances they should resolve to; names in the string that are
+    missing from the mapping are rejected with a :exc:`ValueError` rather than silently
+    producing unusable parameters, and the parsed expression tracks exactly the
+    parameters that the string referred to.
