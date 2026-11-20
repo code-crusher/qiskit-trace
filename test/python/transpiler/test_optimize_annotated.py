@@ -51,8 +51,11 @@ class TestOptimizeSwapBeforeMeasure(QiskitTestCase):
         )
         gate5 = CXGate()
 
+        # Note that the fractional power ``PowerModifier(-0.5)`` is not moved past the
+        # inverse modifier, as ``(A^-1)^0.5`` and ``A^-0.5`` are not equal in general.
         gate1_expected = AnnotatedOperation(
-            SwapGate(), [InverseModifier(), PowerModifier(2), ControlModifier(3)]
+            SwapGate(),
+            [PowerModifier(4), PowerModifier(-0.5), ControlModifier(3)],
         )
         gate2_expected = SwapGate()
         gate3_expected = AnnotatedOperation(CXGate(), ControlModifier(3))
@@ -76,6 +79,55 @@ class TestOptimizeSwapBeforeMeasure(QiskitTestCase):
         qc_expected.append(gate5_expected, [4, 2])
 
         self.assertEqual(qc_optimized, qc_expected)
+
+    def test_negative_fractional_power_modifier(self):
+        """Test that a negative fractional power modifier is not rewritten as an
+        inverse followed by a positive fractional power.
+
+        Regression test of https://github.com/Qiskit/qiskit/issues/16411.
+
+        ``A^(-p)`` equals ``(A^p)^(-1)``, but not ``(A^-1)^p``, whenever an
+        eigenvalue of ``A`` lies on the branch cut used to compute the principal
+        matrix power (``HGate`` has the eigenvalue ``-1``).
+        """
+        for modifiers in [
+            [PowerModifier(-0.5)],
+            [PowerModifier(-0.25)],
+            [InverseModifier(), PowerModifier(0.5)],
+        ]:
+            with self.subTest(modifiers=modifiers):
+                qc = QuantumCircuit(1)
+                qc.append(AnnotatedOperation(HGate(), modifiers), [0])
+                qc_optimized = OptimizeAnnotated()(qc)
+                self.assertEqual(Operator(qc), Operator(qc_optimized))
+
+    def test_powers_are_only_combined_when_exact(self):
+        """Test that powers are only combined when the composition is exact.
+
+        Composing powers is exact when the outer exponent is an integer, that is,
+        ``(A^p)^q == A^(p*q)``, but not when only the inner exponent is an integer,
+        that is, ``(A^2)^0.5`` need not equal ``A``.
+        """
+        with self.subTest("outer exponent is an integer"):
+            qc = QuantumCircuit(1)
+            qc.append(AnnotatedOperation(HGate(), [PowerModifier(0.5), PowerModifier(2)]), [0])
+            qc_optimized = OptimizeAnnotated()(qc)
+            self.assertEqual(Operator(qc), Operator(qc_optimized))
+            expected = QuantumCircuit(1)
+            expected.append(HGate(), [0])
+            self.assertEqual(qc_optimized, expected)
+
+        with self.subTest("only the inner exponent is an integer"):
+            qc = QuantumCircuit(1)
+            qc.append(AnnotatedOperation(HGate(), [PowerModifier(2), PowerModifier(0.5)]), [0])
+            qc_optimized = OptimizeAnnotated()(qc)
+            self.assertEqual(Operator(qc), Operator(qc_optimized))
+            # (H^2)^0.5 is not H, so the two powers must not be collapsed.
+            expected = QuantumCircuit(1)
+            expected.append(
+                AnnotatedOperation(HGate(), [PowerModifier(2), PowerModifier(0.5)]), [0]
+            )
+            self.assertEqual(qc_optimized, expected)
 
     def test_combine_open_control_modifiers(self):
         """Test recursively combining open-controlled modifiers.

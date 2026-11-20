@@ -1,0 +1,11 @@
+---
+fixes:
+  - |
+    Fixed a bug in :class:`.OptimizeAnnotated` where the unitary of a circuit
+    could change when it contained an :class:`.AnnotatedOperation` with a
+    negative fractional power. For example, ``PowerModifier(-0.5)`` was rewritten
+    as ``[InverseModifier(), PowerModifier(0.5)]``, that is, ``A^-0.5`` was
+    replaced by ``(A^-1)^0.5``. These are not equal when an eigenvalue of ``A``
+    lies on the branch cut used to compute the principal matrix power, as is the
+    case for :class:`.HGate`, whose eigenvalue is ``-1``.
+    Fixed `#16411 <https://github.com/Qiskit/qiskit/issues/16411>`__.

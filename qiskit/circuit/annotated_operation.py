@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import dataclasses
+import numbers
 
 
 from qiskit.circuit.operation import Operation
@@ -241,37 +242,67 @@ class AnnotatedOperation(Operation):
         raise AttributeError(f"Cannot validate parameters on the base operation {self.base_op}.")
 
 
+def _is_integer_power(power) -> bool:
+    """Returns True if ``power`` is a real number with an integer value."""
+    return isinstance(power, numbers.Real) and float(power).is_integer()
+
+
 def _canonicalize_modifiers(modifiers):
     """
-    Returns the canonical representative of the modifier list. This is possible
-    since all the modifiers commute; also note that InverseModifier is a special
-    case of PowerModifier. The current solution is to compute the total number
-    of control qubits / control state and the total power. The InverseModifier
-    will be present if total power is negative, whereas the power modifier will
-    be present only with positive powers different from 1.
+    Returns the canonical representative of the modifier list.
+
+    Control modifiers commute with both inverse and power modifiers, so they are
+    always combined into a single control modifier, which is placed at the end of
+    the returned list.
+
+    Inverse and power modifiers, on the other hand, do not commute in general.
+    Note that inverting a power is exact, that is, ``(A^p)^-1 == A^-p``, and so
+    is composing powers when the outer exponent is an integer, that is,
+    ``(A^p)^q == A^(p*q)`` for integer ``q``. Only these rewrites are performed.
+
+    In particular, a fractional power is never moved past an inverse modifier,
+    as ``(A^-1)^p`` and ``A^-p`` need not agree for a non-integer ``p`` (they
+    differ whenever an eigenvalue of ``A`` lies on the branch cut used to
+    compute the principal matrix power). For the same reason, the power
+    modifiers are not combined into a single total power.
     """
-    power = 1
+    # Exponents of the consecutive powers that cannot be combined, in order.
+    powers = []
     num_ctrl_qubits = 0
     ctrl_state = 0
 
     for modifier in modifiers:
         if isinstance(modifier, InverseModifier):
-            power *= -1
+            exponent = -1
+        elif isinstance(modifier, PowerModifier):
+            exponent = modifier.power
         elif isinstance(modifier, ControlModifier):
             num_ctrl_qubits += modifier.num_ctrl_qubits
             ctrl_state = (ctrl_state << modifier.num_ctrl_qubits) | modifier.ctrl_state
-        elif isinstance(modifier, PowerModifier):
-            power *= modifier.power
+            continue
         else:
             raise CircuitError(f"Unknown modifier {modifier}.")
 
-    canonical_modifiers = []
-    if power < 0:
-        canonical_modifiers.append(InverseModifier())
-        power *= -1
+        if exponent == 1:
+            continue
+        if powers and _is_integer_power(exponent):
+            # Composing with an integer power is exact: (A^p)^q == A^(p*q).
+            powers[-1] = powers[-1] * exponent
+            # The combined exponent may itself be an integer, in which case it can
+            # be combined with the preceding exponent as well.
+            while len(powers) > 1 and _is_integer_power(powers[-1]):
+                last = powers.pop()
+                powers[-1] = powers[-1] * last
+        else:
+            powers.append(exponent)
 
-    if power != 1:
-        canonical_modifiers.append(PowerModifier(power))
+    canonical_modifiers = []
+    for exponent in powers:
+        if _is_integer_power(exponent) and exponent < 0:
+            canonical_modifiers.append(InverseModifier())
+            exponent = -exponent
+        if exponent != 1:
+            canonical_modifiers.append(PowerModifier(exponent))
     if num_ctrl_qubits > 0:
         canonical_modifiers.append(ControlModifier(num_ctrl_qubits, ctrl_state))
 

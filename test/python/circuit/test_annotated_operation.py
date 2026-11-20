@@ -168,6 +168,48 @@ class TestAnnotatedOperationClass(QiskitTestCase):
         expected_list = [ControlModifier(num_ctrl_qubits=5, ctrl_state=23)]
         self.assertEqual(canonical_list, expected_list)
 
+    def test_canonicalize_negative_fractional_power(self):
+        """Test that a negative fractional power is not rewritten as an inverse
+        followed by a positive fractional power.
+
+        Regression test of https://github.com/Qiskit/qiskit/issues/16411.
+        """
+        with self.subTest("negative fractional power is preserved"):
+            canonical_list = _canonicalize_modifiers([PowerModifier(-0.5)])
+            self.assertEqual(canonical_list, [PowerModifier(-0.5)])
+
+        with self.subTest("inverse and positive fractional power are preserved"):
+            canonical_list = _canonicalize_modifiers([InverseModifier(), PowerModifier(0.5)])
+            self.assertEqual(canonical_list, [InverseModifier(), PowerModifier(0.5)])
+
+        with self.subTest("a positive fractional power followed by an inverse"):
+            # Here inverting the power is exact, so the result is a negative power.
+            canonical_list = _canonicalize_modifiers([PowerModifier(0.5), InverseModifier()])
+            self.assertEqual(canonical_list, [PowerModifier(-0.5)])
+
+    def test_canonicalize_combines_only_exact_powers(self):
+        """Test that powers are only combined when the composition is exact."""
+        with self.subTest("integer outer exponent"):
+            canonical_list = _canonicalize_modifiers([PowerModifier(0.5), PowerModifier(2)])
+            self.assertEqual(canonical_list, [])
+
+        with self.subTest("integer inner exponent only"):
+            canonical_list = _canonicalize_modifiers([PowerModifier(2), PowerModifier(0.5)])
+            self.assertEqual(canonical_list, [PowerModifier(2), PowerModifier(0.5)])
+
+    def test_canonicalize_is_idempotent(self):
+        """Test that canonicalization returns the same list when applied twice."""
+        for original_list in [
+            [PowerModifier(-0.5)],
+            [InverseModifier(), PowerModifier(0.5)],
+            [PowerModifier(0.5), InverseModifier(), PowerModifier(2), InverseModifier()],
+            [InverseModifier(), ControlModifier(2), PowerModifier(2), PowerModifier(-3)],
+            [PowerModifier(2), PowerModifier(0.5), PowerModifier(-1)],
+        ]:
+            with self.subTest(modifiers=original_list):
+                canonical_list = _canonicalize_modifiers(original_list)
+                self.assertEqual(_canonicalize_modifiers(canonical_list), canonical_list)
+
     def test_params_access(self):
         """Test access to the params field."""
         p, q = Parameter("p"), Parameter("q")
