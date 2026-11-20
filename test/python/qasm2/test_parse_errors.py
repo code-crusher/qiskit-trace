@@ -170,7 +170,11 @@ def bad_token_parametrisation():
         ("if (cond == 0", without(T.RPAREN)),
         ("if (cond == 0)", without(T.ID, T.RESET, T.MEASURE)),
     ]:
-        for token in disallowed:
+        # Sort the tokens so that the generated test ids do not depend on the hash seed.  The
+        # members of an ``enum.Enum`` hash by identity, so iterating a ``frozenset`` of them
+        # yields a different order in every Python process, which makes ``pytest-xdist``
+        # workers collect different test ids and abort the run.
+        for token in sorted(disallowed, key=lambda token: token.name):
             yield BadTokenCase(statement, token.value, name=f"'{statement}'-{token.name.lower()}")
 
 
