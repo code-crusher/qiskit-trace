@@ -27,10 +27,16 @@ use hashbrown::HashMap;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyModule};
 
-use oq3_semantics::syntax_to_semantics::parse_source_string;
+use oq3_semantics::asg;
+use oq3_semantics::context::Context;
+use oq3_semantics::semantic_error::SemanticErrorList;
+use oq3_semantics::symbols::SymbolTable;
+use oq3_semantics::syntax_to_semantics::{parse_source_string, syntax_to_semantic};
+use oq3_semantics::types::Type;
 use pyo3::pybacked::PyBackedStr;
 use qiskit_circuit::circuit_data::PyCircuitData;
 
+use crate::circuit::PyGate;
 use crate::error::QASM3ImporterError;
 
 /// Load an OpenQASM 3 program from a string into a :class:`.QuantumCircuit`.
@@ -45,7 +51,9 @@ use crate::error::QASM3ImporterError;
 ///     source (str): the program source in a Python string.
 ///     custom_gates (Iterable[CustomGate]): Python constructors to use for particular named gates.
 ///         If not supplied, Qiskit will use its own standard-library constructors for gates
-///         defined in the OpenQASM 3.0 standard-library file ``stdgates.inc``.
+///         defined in the OpenQASM 3.0 standard-library file ``stdgates.inc``.  Constructors
+///         given here are used both for gates that the program declares with ``gate`` statements,
+///         and for "opaque" gates that the program calls without declaring them.
 ///     include_path (Iterable[str]): the path to search when resolving ``include`` statements.
 ///         If not given, Qiskit will arrange for this to point to a location containing
 ///         ``stdgates.inc`` only.  Paths are tried in the sequence order.
@@ -78,16 +86,72 @@ pub fn loads(
     let include_path = include_path.map(Ok).unwrap_or_else(default_include_path)?;
     let result = parse_source_string(source, None, Some(&include_path));
     if result.any_errors() {
+        // The semantic analysis rejects calls to gates that are never declared in the program
+        // ("opaque" gates).  If the user supplied constructors for such gates, retry the analysis
+        // with those gate names pre-bound in the symbol table, so the calls can resolve.
+        if !result.any_syntax_errors() {
+            let unbound_gates = custom_gates.as_ref().map(|gates| {
+                gates
+                    .iter()
+                    .filter(|gate| result.symbol_table().lookup(gate.name()).is_err())
+                    .cloned()
+                    .collect::<Vec<_>>()
+            });
+            if let Some(gates) = unbound_gates.filter(|gates| !gates.is_empty()) {
+                let parsed_source = result.syntax_result();
+                let file_path = parsed_source.fake_file_path().clone();
+                let mut context = Context {
+                    program: asg::Program::new(),
+                    semantic_errors: SemanticErrorList::new(file_path.clone()),
+                    symbol_table: SymbolTable::new(),
+                    annotations: Vec::new(),
+                };
+                for gate in &gates {
+                    let _ = context.symbol_table.new_binding(
+                        gate.name(),
+                        &Type::Gate(gate.num_params(), gate.num_qubits()),
+                    );
+                }
+                let (context, errors) = syntax_to_semantic(
+                    parsed_source,
+                    context,
+                    SemanticErrorList::new(file_path.clone()),
+                );
+                if !errors.any_semantic_errors() {
+                    let gates = gate_constructors(py, custom_gates)?;
+                    return crate::build::convert_asg(
+                        py,
+                        &context.program,
+                        &context.symbol_table,
+                        gates,
+                    );
+                }
+                errors.print_errors_no_file(&file_path, parsed_source.source());
+                return Err(QASM3ImporterError::new_err(
+                    "errors during parsing; see printed errors",
+                ));
+            }
+        }
         result.print_errors();
         return Err(QASM3ImporterError::new_err(
             "errors during parsing; see printed errors",
         ));
     }
-    let gates = match custom_gates {
-        Some(gates) => gates
+    let gates = gate_constructors(py, custom_gates)?;
+    crate::build::convert_asg(py, result.program(), result.symbol_table(), gates)
+}
+
+/// Build the map of OpenQASM 3 gate names to the Python-space constructors that should be used
+/// for them.
+fn gate_constructors(
+    py: Python,
+    custom_gates: Option<Vec<PyGate>>,
+) -> PyResult<HashMap<String, PyGate>> {
+    match custom_gates {
+        Some(gates) => Ok(gates
             .into_iter()
             .map(|gate| (gate.name().to_owned(), gate))
-            .collect(),
+            .collect()),
         None => py
             .import("qiskit.qasm3")?
             .getattr("STDGATES_INC_GATES")?
@@ -96,9 +160,8 @@ pub fn loads(
                 let gate = obj?.extract::<circuit::PyGate>()?;
                 Ok((gate.name().to_owned(), gate))
             })
-            .collect::<PyResult<HashMap<_, _>>>()?,
-    };
-    crate::build::convert_asg(py, result.program(), result.symbol_table(), gates)
+            .collect::<PyResult<HashMap<_, _>>>(),
+    }
 }
 
 /// Load an OpenQASM 3 program from a source file into a :class:`.QuantumCircuit`.

@@ -1,0 +1,16 @@
+---
+fixes:
+  - |
+    The experimental native OpenQASM 3 importer (:func:`.qasm3.loads_experimental` and
+    :func:`.qasm3.load_experimental`) can now import programs that call gates which are never
+    declared in the OpenQASM 3 source (sometimes known as "opaque" gates), provided a
+    :class:`.qasm3.CustomGate` constructor is supplied for them via the ``custom_gates`` argument.
+    Previously, such programs always failed with ``UndefGateError``, because the ``custom_gates``
+    mapping was only consulted for gates that were declared in the source.
+  - |
+    The experimental native OpenQASM 3 importer now supports ``input`` declarations of
+    ``float`` scalars.  Each declared input is represented by a :class:`~.circuit.Parameter`
+    object of the same name, which is passed to gate constructors when the input is used as a
+    gate argument, matching the behaviour of the Python-based importer
+    (``qiskit-qasm3-import``).  Inputs of other types are still unsupported and now raise a
+    clear error message instead of a generic "statement not handled" error.

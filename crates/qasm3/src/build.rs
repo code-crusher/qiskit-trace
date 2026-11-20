@@ -35,6 +35,8 @@ pub struct PySymbolTable {
     pub qubits: HashMap<SymbolId, Py<PyAny>>,
     /// Scalar `Clbit` objects.
     pub clbits: HashMap<SymbolId, Py<PyAny>>,
+    /// `Parameter` objects representing runtime `input` scalars.
+    pub inputs: HashMap<SymbolId, Py<PyAny>>,
     /// `QuantumRegister` objects.
     pub qregs: HashMap<SymbolId, PyQuantumRegister>,
     /// `ClassicalRegister` objects.
@@ -123,6 +125,38 @@ impl BuilderState {
                 )),
             },
             _ => unreachable!(),
+        }
+    }
+
+    fn declare_input(
+        &mut self,
+        py: Python,
+        ast_symbols: &SymbolTable,
+        decl: &asg::InputDeclaration,
+    ) -> PyResult<()> {
+        let name_id = decl
+            .name()
+            .as_ref()
+            .map_err(|err| QASM3ImporterError::new_err(format!("internal error: {err:?}")))?;
+        let name_symbol = &ast_symbols[name_id];
+        match name_symbol.symbol_type() {
+            Type::Float(_, _) => {
+                let parameter = self.module.new_parameter(py, name_symbol.name())?;
+                if self
+                    .symbols
+                    .inputs
+                    .insert(name_id.clone(), parameter)
+                    .is_some()
+                {
+                    return Err(QASM3ImporterError::new_err(
+                        "internal error: attempted to add the same input multiple times",
+                    ));
+                }
+                Ok(())
+            }
+            ty => Err(QASM3ImporterError::new_err(format!(
+                "only 'float' input declarations are currently supported, but saw {ty:?}"
+            ))),
         }
     }
 
@@ -377,6 +411,7 @@ pub fn convert_asg(
             asg::Stmt::GateCall(call) => state.call_gate(py, ast_symbols, call)?,
             asg::Stmt::DeclareClassical(decl) => state.declare_classical(py, ast_symbols, decl)?,
             asg::Stmt::DeclareQuantum(decl) => state.declare_quantum(py, ast_symbols, decl)?,
+            asg::Stmt::InputDeclaration(decl) => state.declare_input(py, ast_symbols, decl)?,
             // We ignore gate definitions because the only information we can currently use
             // from them is extracted with `SymbolTable::gates` via `map_gate_ids`.
             asg::Stmt::GateDefinition(_) => (),
@@ -400,7 +435,6 @@ pub fn convert_asg(
             | asg::Stmt::GPhaseCall(_)
             | asg::Stmt::If(_)
             | asg::Stmt::Include(_)
-            | asg::Stmt::InputDeclaration(_)
             | asg::Stmt::ModifiedGPhaseCall(_)
             | asg::Stmt::NullStmt
             | asg::Stmt::OldStyleDeclaration

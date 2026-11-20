@@ -25,32 +25,52 @@ use crate::circuit::PyRegister;
 use crate::error::QASM3ImporterError;
 
 pub fn eval_gate_param(
-    _py: Python,
-    _our_symbols: &PySymbolTable,
+    py: Python,
+    our_symbols: &PySymbolTable,
     _ast_symbols: &SymbolTable,
     param: &asg::TExpr,
-) -> PyResult<f64> {
+) -> PyResult<Py<PyAny>> {
     // Only handling float parameters in this first pass of the importer.
     match param.get_type() {
         Type::Float(_, is_const) => {
             if is_const.clone().into() {
                 match param.expression() {
                     asg::Expr::Literal(asg::Literal::Float(lit)) => {
-                        lit.value().parse().map_err(|_| {
+                        let value: f64 = lit.value().parse().map_err(|_| {
                             QASM3ImporterError::new_err(format!(
                                 "invalid float literal: '{}'",
                                 lit.value()
                             ))
-                        })
+                        })?;
+                        value
+                            .into_pyobject(py)
+                            .map(|obj| obj.into_any().unbind())
+                            .map_err(|err| {
+                                QASM3ImporterError::new_err(format!("internal error: {err:?}"))
+                            })
                     }
                     expr => Err(QASM3ImporterError::new_err(format!(
                         "unhandled expression for floating-point constant: {expr:?}"
                     ))),
                 }
             } else {
-                Err(QASM3ImporterError::new_err(format!(
-                    "expected a constant float, but found a runtime value: {param:?}"
-                )))
+                // A runtime value can only be an `input` declaration, which we represent as a
+                // `Parameter` object.
+                match param.expression() {
+                    asg::Expr::Identifier(name_id) => {
+                        let name_id = name_id.as_ref().map_err(|err| {
+                            QASM3ImporterError::new_err(format!("internal error: {err:?}"))
+                        })?;
+                        our_symbols.inputs.get(name_id).cloned().ok_or_else(|| {
+                            QASM3ImporterError::new_err(format!(
+                                "runtime value '{name_id:?}' was not declared as an input"
+                            ))
+                        })
+                    }
+                    expr => Err(QASM3ImporterError::new_err(format!(
+                        "expected a constant float, but found a runtime value: {expr:?}"
+                    ))),
+                }
             }
         }
         Type::Angle(_, _) => Err(QASM3ImporterError::new_err(

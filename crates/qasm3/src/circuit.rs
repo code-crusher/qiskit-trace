@@ -188,6 +188,7 @@ pub struct PyCircuitModule {
     clbit: Py<PyType>,
     circuit_instruction: Py<PyType>,
     barrier: Py<PyType>,
+    parameter: Py<PyType>,
     // The singleton object.
     measure: Py<PyAny>,
 }
@@ -216,6 +217,7 @@ impl PyCircuitModule {
                 .cast_into::<PyType>()?
                 .unbind(),
             barrier: module.getattr("Barrier")?.cast_into::<PyType>()?.unbind(),
+            parameter: module.getattr("Parameter")?.cast_into::<PyType>()?.unbind(),
             // Measure is a singleton, so just store the object.
             measure: module.getattr("Measure")?.call0()?.into_py_any(py)?,
         })
@@ -293,6 +295,18 @@ impl PyCircuitModule {
         self.barrier
             .call1(py, (num_qubits,))
             .map(|x| x.into_pyobject(py).unwrap().unbind())
+    }
+
+    /// Create a new :class:`~.Parameter` object, used to represent a runtime ``input`` scalar.
+    pub fn new_parameter<'py, T: IntoPyObject<'py>>(
+        &self,
+        py: Python<'py>,
+        name: T,
+    ) -> PyResult<Py<PyAny>>
+    where
+        <T as IntoPyObject<'py>>::Output: IntoPyObject<'py>,
+    {
+        self.parameter.call1(py, (name,))
     }
 
     pub fn measure(&self, py: Python) -> Py<PyAny> {

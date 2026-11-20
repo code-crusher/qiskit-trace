@@ -23,7 +23,15 @@ import warnings
 
 from qiskit import qasm3
 from qiskit.exceptions import ExperimentalWarning
-from qiskit.circuit import QuantumCircuit, QuantumRegister, ClassicalRegister, Qubit, Clbit
+from qiskit.circuit import (
+    ClassicalRegister,
+    Clbit,
+    Gate,
+    Parameter,
+    Qubit,
+    QuantumCircuit,
+    QuantumRegister,
+)
 from qiskit.circuit import library as lib, annotation
 from qiskit.utils import optionals
 from test import QiskitTestCase
@@ -514,3 +522,105 @@ class TestQASM3Import(QiskitTestCase):
         }
         self.assertEqual(stdgates["rx"], (1, 1))
         self.assertEqual(stdgates["cphase"], (1, 2))
+
+    def test_opaque_custom_gate(self):
+        """A custom gate constructor can be supplied for a gate with no definition in the source."""
+        program = """
+            OPENQASM 3.0;
+            qubit[2] q;
+            my_gate q[0], q[1];
+            my_gate q[1], q[0];
+        """
+        with self.assertRaisesRegex(qasm3.QASM3ImporterError, "errors during parsing"):
+            qasm3.loads_experimental(program)
+        parsed = qasm3.loads_experimental(
+            program, custom_gates=[qasm3.CustomGate(lib.CXGate, "my_gate", 0, 2)]
+        )
+        expected = QuantumCircuit(QuantumRegister(2, "q"))
+        expected.cx(0, 1)
+        expected.cx(1, 0)
+        self.assertEqual(parsed, expected)
+
+    def test_opaque_custom_gate_with_input(self):
+        """A custom gate constructor can be supplied for an undeclared gate, and 'input'
+        declarations are passed to it as `Parameter` objects."""
+        program = """
+            OPENQASM 3.0;
+            input float[64] _a_0_0_;
+            qubit[1] q0;
+            rx_cal(_a_0_0_) q0[0];
+        """
+        custom_gate = Gate("rx_cal", 1, [Parameter("a")])
+        parsed = qasm3.loads_experimental(
+            program,
+            custom_gates=[
+                qasm3.CustomGate(lambda _: custom_gate, "rx_cal", 1, 1),
+            ],
+        )
+        # The returned circuit contains exactly the object the constructor produced.
+        expected = QuantumCircuit(QuantumRegister(1, "q0"))
+        expected.append(custom_gate, [0])
+        self.assertEqual(parsed, expected)
+        self.assertIs(parsed.data[0].operation, custom_gate)
+
+    def test_opaque_custom_gate_runtime_param(self):
+        """An undeclared gate called with an 'input' variable receives the corresponding
+        `Parameter` object as its argument."""
+        program = """
+            OPENQASM 3.0;
+            input float[64] theta;
+            qubit[1] q;
+            my_rx(theta) q[0];
+        """
+        parsed = qasm3.loads_experimental(
+            program, custom_gates=[qasm3.CustomGate(lib.RXGate, "my_rx", 1, 1)]
+        )
+        # `Parameter` objects do not compare equal across instances, so we check the name and
+        # that the value flows through by binding.
+        (theta,) = parsed.parameters
+        self.assertEqual(theta.name, "theta")
+        bound = parsed.assign_parameters({theta: 0.5})
+        expected = QuantumCircuit(QuantumRegister(1, "q"))
+        expected.rx(0.5, 0)
+        self.assertEqual(bound, expected)
+
+    def test_stdgate_with_input(self):
+        """Standard-library gates can also be called with runtime 'input' parameters."""
+        program = """
+            OPENQASM 3.0;
+            include "stdgates.inc";
+            input float[64] theta;
+            qubit[1] q;
+            rx(theta) q[0];
+        """
+        parsed = qasm3.loads_experimental(program)
+        (theta,) = parsed.parameters
+        self.assertEqual(theta.name, "theta")
+        bound = parsed.assign_parameters({theta: 0.5})
+        expected = QuantumCircuit(QuantumRegister(1, "q"))
+        expected.rx(0.5, 0)
+        self.assertEqual(bound, expected)
+
+    def test_unsupported_input_declaration(self):
+        """Input declarations of types other than 'float' are rejected with a clear message."""
+        program = """
+            OPENQASM 3.0;
+            input int[32] counter;
+            qubit[1] q;
+        """
+        with self.assertRaisesRegex(
+            qasm3.QASM3ImporterError, "only 'float' input declarations"
+        ):
+            qasm3.loads_experimental(program)
+
+    def test_opaque_custom_gate_wrong_arity(self):
+        """A call to an undeclared gate must still be checked against the given constructor."""
+        program = """
+            OPENQASM 3.0;
+            qubit[2] q;
+            my_gate q[0];
+        """
+        with self.assertRaisesRegex(qasm3.QASM3ImporterError, "errors during parsing"):
+            qasm3.loads_experimental(
+                program, custom_gates=[qasm3.CustomGate(lib.CXGate, "my_gate", 0, 2)]
+            )
