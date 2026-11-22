@@ -116,31 +116,33 @@ class ControllableSynthesis(UnitarySynthesisPlugin):
                 setattr(cls, name, value(name[len(prefix) :]))
 
 
+MOCK_PLUGINS = {}
+
+
+@unittest.mock.patch(
+    "qiskit.transpiler.passes.synthesis.plugin.UnitarySynthesisPluginManager",
+    functools.partial(_MockPluginManager, plugins=MOCK_PLUGINS),
+)
 class TestUnitarySynthesisPlugin(QiskitTestCase):
     """Tests for the synthesis plugin interface."""
 
     # The proliferation of the "disable=no-members" lines are because pylint (very reasonably) can't
     # detect when we've mocked out an internal object with a MagicMock.
 
-    MOCK_PLUGINS = {}
+    # The class-level patch above is applied as a class decorator rather than by wrapping the test
+    # methods in `setUpClass` as was previously done: pytest collects its tests before `setUpClass`
+    # runs, so the wrapped methods would never be visible to the pytest runner, and every test
+    # would run without the mock plugin manager being in place.  The decorator form decorates the
+    # `test_` methods at class-definition time, which both the unittest and pytest runners see.
+    # `MOCK_PLUGINS` has to live at module level so the patch can close over it; the alias below
+    # keeps the class-attribute access pattern used throughout the tests.
+    MOCK_PLUGINS = MOCK_PLUGINS
     DEFAULT_PLUGIN = DefaultUnitarySynthesis
 
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
         cls.MOCK_PLUGINS["_controllable"] = ControllableSynthesis
-        # Decorate all test functions to patch the plugin manager with a fake one, which inserts our
-        # testing mocks into the lookup.  It's easier to do this than to correctly register them,
-        # because it's fiddly to trick importlib into registering new entry points metadata without
-        # actually installing a package before the interpreter was invoked.  We don't want to leak
-        # any testing classes out into public releases, so we just patch.
-        decorator = unittest.mock.patch(
-            "qiskit.transpiler.passes.synthesis.plugin.UnitarySynthesisPluginManager",
-            functools.partial(_MockPluginManager, plugins=cls.MOCK_PLUGINS),
-        )
-        for name in dir(cls):
-            if name.startswith("test_"):
-                setattr(cls, name, decorator(getattr(cls, name)))
 
     def setUp(self):
         super().setUp()
