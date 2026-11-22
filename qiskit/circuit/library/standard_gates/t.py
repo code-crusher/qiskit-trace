@@ -18,7 +18,7 @@ import numpy
 
 from qiskit.circuit.singleton import SingletonGate, stdlib_singleton_key
 from qiskit.circuit.library.standard_gates.p import PhaseGate
-from qiskit.circuit._utils import with_gate_array
+from qiskit.circuit._utils import _principal_angle, with_gate_array
 from qiskit._accelerate.circuit import StandardGate
 
 
@@ -93,7 +93,7 @@ class TGate(SingletonGate):
         return TdgGate()
 
     def power(self, exponent: float, annotated: bool = False):
-        return PhaseGate(0.25 * numpy.pi * exponent)
+        return PhaseGate(_principal_angle(0.25 * numpy.pi * exponent))
 
     def __eq__(self, other):
         return isinstance(other, TGate)
@@ -169,7 +169,7 @@ class TdgGate(SingletonGate):
         return TGate()
 
     def power(self, exponent: float, annotated: bool = False):
-        return PhaseGate(-0.25 * numpy.pi * exponent)
+        return PhaseGate(_principal_angle(-0.25 * numpy.pi * exponent))
 
     def __eq__(self, other):
         return isinstance(other, TdgGate)

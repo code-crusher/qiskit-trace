@@ -19,7 +19,7 @@ from cmath import exp
 import numpy
 
 from qiskit._accelerate.circuit import StandardGate
-from qiskit.circuit._utils import _ctrl_state_to_int
+from qiskit.circuit._utils import _ctrl_state_to_int, _principal_angle
 from qiskit.circuit.controlledgate import ControlledGate
 from qiskit.circuit.gate import Gate
 from qiskit.circuit.parameterexpression import ParameterValueType
@@ -162,6 +162,11 @@ class PhaseGate(Gate):
 
     def power(self, exponent: float, annotated: bool = False):
         (theta,) = self.params
+        if isinstance(theta, (int, float)):
+            # The phase angle is 2*pi periodic, so reduce it to its principal value both before
+            # scaling (to take the principal root for fractional powers) and after (to keep the
+            # output angle bounded no matter how large the exponent is).
+            return PhaseGate(_principal_angle(exponent * _principal_angle(theta)))
         return PhaseGate(exponent * theta)
 
     def __eq__(self, other):
@@ -298,6 +303,11 @@ class CPhaseGate(ControlledGate):
 
     def power(self, exponent: float, annotated: bool = False):
         (theta,) = self.params
+        if isinstance(theta, (int, float)):
+            # See `PhaseGate.power` for the angle reduction rationale.
+            return CPhaseGate(
+                _principal_angle(exponent * _principal_angle(theta)), ctrl_state=self.ctrl_state
+            )
         return CPhaseGate(exponent * theta, ctrl_state=self.ctrl_state)
 
     def __eq__(self, other):

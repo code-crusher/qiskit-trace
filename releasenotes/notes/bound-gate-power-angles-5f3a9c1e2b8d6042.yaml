@@ -1,0 +1,23 @@
+---
+fixes:
+  - |
+    Fixed a bug where :meth:`.Gate.power` on the standard rotation gates
+    (such as :class:`~.library.PhaseGate`, :class:`~.library.RZGate`,
+    :class:`~.library.RXGate`, :class:`~.library.RYYGate` and other similar
+    gates) returned gates with angles growing without bound in the magnitude
+    of the exponent.  For example, ``PhaseGate(theta).power(2**30)`` produced a
+    phase gate with an angle around :math:`2^{30} \theta`, which is equivalent
+    modulo :math:`2\pi` to a bounded angle, but whose huge magnitude could be
+    rejected by hardware backends (for example when parsing an instruction
+    parameter that does not fit an unsigned 32-bit integer).
+    The angles produced by these ``power`` methods are now reduced to their
+    principal value, and this is done with respect to the *true* value of
+    :math:`2\pi` rather than its floating-point approximation, so the resulting
+    gate describes the same transformation as the unreduced angle even for
+    astronomically large angles, such as those produced by
+    :func:`.phase_estimation` with a large number of evaluation qubits.
+    As a side effect, the matrices of these gates are now computed from a
+    bounded angle, which avoids the accuracy loss that the mathematical
+    library's trigonometric functions can themselves introduce when reducing
+    arguments of very large magnitude.
+    See `#16012 <https://github.com/Qiskit/qiskit/issues/16012>`__.

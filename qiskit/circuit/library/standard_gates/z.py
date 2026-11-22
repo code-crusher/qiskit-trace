@@ -17,7 +17,12 @@ from __future__ import annotations
 
 import numpy
 
-from qiskit.circuit._utils import _ctrl_state_to_int, with_gate_array, with_controlled_gate_array
+from qiskit.circuit._utils import (
+    _ctrl_state_to_int,
+    _principal_angle,
+    with_gate_array,
+    with_controlled_gate_array,
+)
 from qiskit.circuit.singleton import SingletonGate, SingletonControlledGate, stdlib_singleton_key
 from qiskit._accelerate.circuit import StandardGate
 
@@ -154,7 +159,7 @@ class ZGate(SingletonGate):
         return ZGate()  # self-inverse
 
     def power(self, exponent: float, annotated: bool = False):
-        return PhaseGate(numpy.pi * exponent)
+        return PhaseGate(_principal_angle(numpy.pi * exponent))
 
     def __eq__(self, other):
         return isinstance(other, ZGate)

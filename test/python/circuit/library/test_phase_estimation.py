@@ -260,6 +260,53 @@ class TestPhaseEstimation(QiskitTestCase):
         eigenstate.h(0)
         self.assertPhaseEstimationIsCorrect(qpe, eigenstate, "0011")
 
+    def test_phase_estimation_angles_bounded(self):
+        """Test that phase estimation produces bounded gate angles.
+
+        The controlled powers ``unitary.power(2**k)`` scale the rotation angle by ``2**k``, and
+        an unscaled angle grows past the point where a backend can represent it (for example
+        larger than an unsigned 32-bit integer, which the backend compiler fails to parse).
+        See issue #16012.
+        """
+        theta = 2 * np.pi * (np.sqrt(2) - 1)
+        unitary = QuantumCircuit(1)
+        unitary.p(theta, 0)
+        qpe = phase_estimation(4, unitary)
+
+        # The controlled-phase angles must stay within the principal range; before the fix the
+        # largest was 2**3 * theta, and it grows without bound in the number of evaluation
+        # qubits.
+        for instruction in qpe.data:
+            for param in instruction.operation.params:
+                if isinstance(param, (int, float)):
+                    self.assertLessEqual(abs(float(param)), 2 * np.pi + 1e-9)
+
+        # The powers must still describe the intended controlled phase, i.e. the reduction is
+        # with respect to the true value of 2*pi.
+        eigenstate = QuantumCircuit(1)
+        eigenstate.x(0)
+        full = QuantumCircuit(qpe.num_qubits)
+        full.compose(eigenstate, [qpe.num_qubits - 1], inplace=True)
+        full.compose(qpe, inplace=True)
+        actual = Statevector(full)
+
+        # Reference computed with the unreduced angles.
+        num_eval = 4
+        reference_circuit = QuantumCircuit(qpe.num_qubits)
+        reference_circuit.x(num_eval)
+        for q in range(num_eval):
+            reference_circuit.h(q)
+        for k in range(num_eval):
+            # the raw, unreduced angle 2**k * theta
+            reference_circuit.cp(theta * 2**k, k, num_eval)
+        # inverse QFT in the swap-free convention used by the library circuit.
+        for j in reversed(range(num_eval)):
+            reference_circuit.h(j)
+            for k in range(j):
+                reference_circuit.cp(-np.pi / 2 ** (j - k), k, j)
+        expected = Statevector(reference_circuit)
+        np.testing.assert_allclose(actual.data, expected.data, atol=1e-10)
+
 
 if __name__ == "__main__":
     unittest.main()

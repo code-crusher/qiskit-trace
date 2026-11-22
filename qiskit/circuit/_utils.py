@@ -14,10 +14,75 @@ This module contains utility functions for circuits.
 """
 
 import math
+from decimal import Decimal, localcontext
+
 import numpy
 
 from qiskit.exceptions import QiskitError
 from qiskit.circuit.exceptions import CircuitError
+
+# The value of 2*pi to far more digits than a `float` can represent, for use in angle reduction.
+# Reducing huge angles using the *float* value of ``2 * pi`` loses accuracy proportional to the
+# number of rotations being removed (e.g. an angle built as ``2**n * theta`` in phase estimation
+# can be reduced to what looks like a random value), whereas hardware and math-library
+# trigonometric functions reduce their arguments with respect to the true transcendental value.
+with localcontext() as _ctx:
+    # Do not let the (28-digit) default context precision truncate the literal.
+    _ctx.prec = 60
+    _TWO_PI_EXACT = 2 * Decimal(
+        "3.1415926535897932384626433832795028841971693993751058209749445923078164062"
+        "862089986280348253421170679821480865132823066470938446095505822317253594081284"
+    )
+
+
+def _principal_angle(angle: float, period: float | None = None) -> float:
+    """Reduce ``angle`` to its principal value in ``(-period/2, period/2]``.
+
+    The reduction is performed with respect to the *true* (transcendental) value of ``period``,
+    which must be a multiple of :math:`2\\pi`, not its floating-point approximation, so the
+    returned angle produces the same matrix as the input even when the input is too large for
+    the float representation of :math:`2\\pi` to be used directly.  This matters for the
+    huge angles produced by e.g. :meth:`.phase_estimation`, where reducing with the float
+    approximation of :math:`2\\pi` can change the gate the angle describes entirely.
+
+    Args:
+        angle: The angle to reduce.
+        period: The periodicity of the angle, as a multiple of :math:`2\\pi`.  Defaults to
+            :math:`2\\pi`.
+
+    Returns:
+        The equivalent angle in ``(-period/2, period/2]``.
+    """
+    if not math.isfinite(angle):
+        # A non-finite angle cannot be meaningfully reduced.
+        return angle
+    if period is None:
+        turns = 1
+        half = math.pi
+    else:
+        # The period is a whole number of 2*pi turns (e.g. 4*pi for Pauli rotations); measure it
+        # in terms of the exact value above so that the reduction is with respect to the true
+        # period, not its floating-point approximation.
+        turns = round(period / (2 * math.pi))
+        half = period / 2
+    if -half < angle <= half:
+        return angle
+    with localcontext() as ctx:
+        # Enough precision to hold the integer part of `angle` (and hence the integer quotient of
+        # the reduction, which ``Decimal`` otherwise rejects as division-impossible) exactly,
+        # with far more digits left over than a float can resolve.
+        ctx.prec = max(Decimal(angle).adjusted(), 0) + 60
+        # The scaling by `turns` must happen in this context; the default 28-digit context would
+        # truncate `_TWO_PI_EXACT`, and that (relative) error scales with the size of `angle`.
+        exact_period = turns * _TWO_PI_EXACT
+        # Unlike `float.__mod__`, `Decimal.__mod__` takes the sign of the dividend, so
+        # renormalise the remainder onto `[0, period)` before folding into the target range.
+        remainder = Decimal(angle) % exact_period
+        if remainder <= 0:
+            remainder += exact_period
+        if remainder > exact_period / 2:
+            remainder -= exact_period
+        return float(remainder)
 
 
 def _compute_control_matrix(base_mat, num_ctrl_qubits, ctrl_state=None):

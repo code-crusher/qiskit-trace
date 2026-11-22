@@ -14,8 +14,10 @@
 
 from __future__ import annotations
 
+import math
 from cmath import exp
 
+from qiskit.circuit._utils import _principal_angle
 from qiskit.circuit.gate import Gate
 from qiskit.circuit.parameterexpression import ParameterValueType
 from qiskit._accelerate.circuit import StandardGate
@@ -144,6 +146,13 @@ class RZZGate(Gate):
 
     def power(self, exponent: float, annotated: bool = False):
         (theta,) = self.params
+        if isinstance(theta, (int, float)):
+            # The rotation angle is 4*pi periodic, so reduce it to its principal value
+            # both before scaling (to take the principal root for fractional powers) and
+            # after (to keep the output angle bounded no matter how large the exponent is).
+            return RZZGate(
+                _principal_angle(exponent * _principal_angle(theta, 4 * math.pi), 4 * math.pi)
+            )
         return RZZGate(exponent * theta)
 
     def __eq__(self, other):

@@ -16,7 +16,7 @@
 import numpy as np
 
 from qiskit.circuit.singleton import SingletonGate, stdlib_singleton_key
-from qiskit.circuit._utils import with_gate_array
+from qiskit.circuit._utils import _principal_angle, with_gate_array
 from qiskit._accelerate.circuit import StandardGate
 
 from .xx_plus_yy import XXPlusYYGate
@@ -111,7 +111,7 @@ class iSwapGate(SingletonGate):
         )
 
     def power(self, exponent: float, annotated: bool = False):
-        return XXPlusYYGate(-np.pi * exponent)
+        return XXPlusYYGate(_principal_angle(-np.pi * exponent, 4 * np.pi))
 
     def __eq__(self, other):
         return isinstance(other, iSwapGate)

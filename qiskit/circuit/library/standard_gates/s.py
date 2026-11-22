@@ -18,7 +18,11 @@ from __future__ import annotations
 import numpy
 
 from qiskit.circuit.singleton import SingletonGate, SingletonControlledGate, stdlib_singleton_key
-from qiskit.circuit._utils import with_gate_array, with_controlled_gate_array
+from qiskit.circuit._utils import (
+    _principal_angle,
+    with_gate_array,
+    with_controlled_gate_array,
+)
 from qiskit._accelerate.circuit import StandardGate
 
 _S_ARRAY = numpy.array([[1, 0], [0, 1j]])
@@ -137,7 +141,7 @@ class SGate(SingletonGate):
     def power(self, exponent: float, annotated: bool = False):
         from .p import PhaseGate
 
-        return PhaseGate(0.5 * numpy.pi * exponent)
+        return PhaseGate(_principal_angle(0.5 * numpy.pi * exponent))
 
     def __eq__(self, other):
         return isinstance(other, SGate)
@@ -254,7 +258,7 @@ class SdgGate(SingletonGate):
     def power(self, exponent: float, annotated: bool = False):
         from .p import PhaseGate
 
-        return PhaseGate(-0.5 * numpy.pi * exponent)
+        return PhaseGate(_principal_angle(-0.5 * numpy.pi * exponent))
 
     def __eq__(self, other):
         return isinstance(other, SdgGate)
@@ -345,7 +349,9 @@ class CSGate(SingletonControlledGate):
     def power(self, exponent: float, annotated: bool = False):
         from .p import CPhaseGate
 
-        return CPhaseGate(0.5 * numpy.pi * exponent, ctrl_state=self.ctrl_state)
+        return CPhaseGate(
+            _principal_angle(0.5 * numpy.pi * exponent), ctrl_state=self.ctrl_state
+        )
 
     def __eq__(self, other):
         return isinstance(other, CSGate) and self.ctrl_state == other.ctrl_state
@@ -435,7 +441,9 @@ class CSdgGate(SingletonControlledGate):
     def power(self, exponent: float, annotated: bool = False):
         from .p import CPhaseGate
 
-        return CPhaseGate(-0.5 * numpy.pi * exponent, ctrl_state=self.ctrl_state)
+        return CPhaseGate(
+            _principal_angle(-0.5 * numpy.pi * exponent), ctrl_state=self.ctrl_state
+        )
 
     def __eq__(self, other):
         return isinstance(other, CSdgGate) and self.ctrl_state == other.ctrl_state

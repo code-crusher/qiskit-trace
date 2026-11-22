@@ -19,7 +19,7 @@ import numpy as np
 import scipy.linalg
 from ddt import data, ddt, unpack
 
-from qiskit.circuit import Gate, QuantumCircuit, AnnotatedOperation
+from qiskit.circuit import Gate, QuantumCircuit, AnnotatedOperation, Parameter
 from qiskit.circuit.library import (
     CPhaseGate,
     CSdgGate,
@@ -306,6 +306,94 @@ class TestControlledGatePower(QiskitTestCase):
             Operator(powered),
             Operator(gate.base_gate.power(exponent).control(1, ctrl_state=gate.ctrl_state)),
         )
+
+
+class TestPowerAngleBounding(QiskitTestCase):
+    """Test that powering standard rotation gates keeps the angles bounded.
+
+    Raising a rotation gate to a large power must not scale its angle without bound: the angle
+    is periodic, and angles with a magnitude beyond what a backend can parse (for example an
+    unsigned 32-bit integer) used to be produced by phase estimation, which builds controlled
+    powers ``unitary.power(2**k)``.  See issue #16012.
+    """
+
+    # Powers of two appear in phase estimation, so cover a range that outgrows 2**32.
+    exponents = [1, 2, 3, 1.5, -1.5, 0.5, 10.5, 2**10, 2**32, 2**63, -(2**63), 2**63 + 0.5]
+
+    def assert_bounded(self, gate: Gate, output: Gate, period: float):
+        """Assert all angle parameters of ``output`` are within the principal range."""
+        for param in output.params:
+            if isinstance(param, (int, float)):
+                self.assertLessEqual(abs(param), period / 2 + 1e-9, msg=f"{gate} -> {output}")
+
+    def test_phase_and_controlled(self):
+        """The 2*pi-periodic phase gates stay bounded under large powers."""
+        for exponent in self.exponents:
+            self.assert_bounded(PhaseGate(0.1), PhaseGate(0.1).power(exponent), 2 * np.pi)
+            self.assert_bounded(CPhaseGate(0.1), CPhaseGate(0.1).power(exponent), 2 * np.pi)
+
+    def test_pauli_rotations(self):
+        """The 4*pi-periodic rotation gates stay bounded under large powers."""
+        gates = [
+            RXGate(0.1),
+            RYGate(0.1),
+            RZGate(0.1),
+            RGate(0.1, 0.3),
+            RXXGate(0.1),
+            RYYGate(0.1),
+            RZZGate(0.1),
+            RZXGate(0.1),
+            XXMinusYYGate(0.1, 0.2),
+            XXPlusYYGate(0.1, 0.2),
+        ]
+        for gate in gates:
+            for exponent in self.exponents:
+                self.assert_bounded(gate, gate.power(exponent), 4 * np.pi)
+
+    def test_constant_angle_gates(self):
+        """Gates whose power scales a constant angle stay bounded."""
+        # iSwap powers map to XXPlusYY, whose angle is 4*pi periodic; the others are 2*pi.
+        gates = [
+            (SGate(), 2 * np.pi),
+            (SdgGate(), 2 * np.pi),
+            (TGate(), 2 * np.pi),
+            (TdgGate(), 2 * np.pi),
+            (ZGate(), 2 * np.pi),
+            (iSwapGate(), 4 * np.pi),
+            (CSGate(), 2 * np.pi),
+            (CSdgGate(), 2 * np.pi),
+        ]
+        for gate, period in gates:
+            for exponent in self.exponents:
+                self.assert_bounded(gate, gate.power(exponent), period)
+
+    def test_power_matches_matrix_power(self):
+        """Powers of huge-angle gates match the matrix (principal) power of the gate.
+
+        The reduced angle must describe the same gate as the matrix power, i.e. the reduction
+        must be with respect to the true value of 2*pi rather than its float approximation,
+        even for angles too large to reduce reliably with floating-point arithmetic.
+        """
+        # An angle that is a huge number of rotations away from the principal value.
+        theta = 0.123 * 2**61
+        for gate, powered in [
+            (PhaseGate(theta), PhaseGate(theta).power(1 / 4)),
+            (RZGate(theta), RZGate(theta).power(1 / 4)),
+            (RXGate(theta), RXGate(theta).power(1 / 4)),
+        ]:
+            expected = scipy.linalg.fractional_matrix_power(np.array(gate), 1 / 4)
+            np.testing.assert_allclose(np.array(powered), expected, atol=1e-8)
+            for param in powered.params:
+                self.assertLessEqual(abs(param), 2 * np.pi, msg=f"{gate} -> {powered}")
+
+    def test_symbolic_power_unchanged(self):
+        """Symbolic angle parameters keep the symbolic scaling behaviour."""
+        theta = Parameter("theta")
+        self.assertEqual(PhaseGate(theta).power(2).params[0], 2 * theta)
+        self.assertEqual(RZGate(theta).power(2.5).params[0], 2.5 * theta)
+        phi = Parameter("phi")
+        self.assertEqual(RGate(theta, phi).power(2).params[0], 2 * theta)
+        self.assertEqual(RGate(theta, phi).power(2).params[1], phi)
 
 
 if __name__ == "__main__":
