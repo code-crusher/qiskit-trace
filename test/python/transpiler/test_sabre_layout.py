@@ -20,6 +20,7 @@ from qiskit import QuantumRegister, QuantumCircuit
 from qiskit.circuit import library as lib, Parameter
 from qiskit.circuit.classical import expr, types
 from qiskit.circuit.library import efficient_su2, quantum_volume
+from qiskit.quantum_info import Operator
 from qiskit.transpiler import CouplingMap, AnalysisPass, PassManager, Target, Layout
 from qiskit.transpiler.passes import SabreLayout, DenseLayout, Unroll3qOrMore, BasicSwap
 from qiskit.transpiler.exceptions import TranspilerError
@@ -521,6 +522,68 @@ class TestDisjointDeviceSabreLayout(QiskitTestCase):
         self.assertEqual(len(out.layout.initial_layout), len(out.layout.final_layout))
         self.assertEqual(out.layout.initial_index_layout(filter_ancillas=False), [4, 5, 3, 0, 1, 2])
         self.assertEqual(out.layout.final_index_layout(filter_ancillas=False), [3, 5, 4, 0, 1, 2])
+
+    def test_disjoint_map_with_idle_qubits(self):
+        """Regression test for gh-15841.
+
+        A circuit interacting with only a single connected component of a disjoint coupling map
+        must be routable even when its (idle) qubits make it wider than every component, instead
+        of panicking inside the Rust Sabre implementation with an index-out-of-bounds error."""
+        qc = QuantumCircuit(4)
+        qc.h(0)
+        qc.h(2)
+        qc.cx(0, 2)
+
+        disjoint = CouplingMap([[0, 1], [1, 0], [2, 3], [3, 2]])
+        for optimization_level in (1, 2, 3):
+            with self.subTest(optimization_level=optimization_level):
+                out = transpile(
+                    qc,
+                    coupling_map=disjoint,
+                    routing_method="sabre",
+                    optimization_level=optimization_level,
+                )
+                self.assertTrue(Operator.from_circuit(out).equiv(Operator(qc)))
+                # Every 2q gate in the routed circuit must act on qubits within a single
+                # connected component of the coupling map.
+                components = [
+                    {component.graph[node] for node in component.graph.node_indices()}
+                    for component in disjoint.connected_components()
+                ]
+                for inst in out.data:
+                    if len(inst.qubits) != 2:
+                        continue
+                    pair = set(out.find_bit(qubit).index for qubit in inst.qubits)
+                    self.assertTrue(
+                        any(pair <= nodes for nodes in components),
+                        f"gate {inst.operation.name} acts across disconnected components",
+                    )
+
+    def test_disjoint_map_two_components_with_idle_qubits(self):
+        """The routing result must be valid when the active qubits form two components that each
+        fit within a separate coupling-map component, even though the full-width DAG is exactly as
+        wide as the (disconnected) device."""
+        qc = QuantumCircuit(4)
+        qc.cx(0, 1)
+        qc.cx(2, 3)
+
+        disjoint = CouplingMap([[0, 1], [1, 0], [2, 3], [3, 2]])
+        layout_routing_pass = SabreLayout(disjoint, seed=123456, swap_trials=1, layout_trials=1)
+        out = layout_routing_pass(qc)
+        self.assertEqual(len(out.layout.initial_layout), len(out.layout.final_layout))
+        self.assertTrue(Operator.from_circuit(out).equiv(Operator(qc)))
+
+    def test_disjoint_map_interaction_too_large_with_idle_qubits(self):
+        """A connected interaction component wider than every coupling-map component must raise
+        a 'TranspilerError', not panic, even when the total circuit width equals the device."""
+        qc = QuantumCircuit(4)
+        qc.cx(0, 1)
+        qc.cx(1, 2)
+
+        disjoint = CouplingMap([[0, 1], [1, 0], [2, 3], [3, 2]])
+        layout_routing_pass = SabreLayout(disjoint, seed=123456, swap_trials=1, layout_trials=1)
+        with self.assertRaises(TranspilerError):
+            layout_routing_pass(qc)
 
     def test_sabre_layout_global_1q(self):
         """Test that the pass runs with a globally defined 1q gate."""

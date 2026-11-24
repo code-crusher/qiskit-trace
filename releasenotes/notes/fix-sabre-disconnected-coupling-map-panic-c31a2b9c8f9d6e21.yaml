@@ -1,0 +1,15 @@
+---
+fixes:
+  - |
+    Fixed a Rust thread panic (``pyo3_runtime.PanicException: index out of bounds``) in
+    :class:`.SabreLayout` when the coupling map has multiple connected components ("islands")
+    and the circuit is wider than every individual component, for example because it contains
+    idle qubits, but all its multi-qubit interactions still fit within a single component.
+
+    Previously, the disjoint-handling fast path compared the size of the largest coupling-map
+    component against the number of *active* circuit qubits, and then routed the *full-width*
+    circuit against a neighbor table sized only for that component, which could index out of
+    bounds.  The check now correctly accounts for the full circuit width, and such circuits are
+    routed successfully.  Circuits whose connected interaction components genuinely do not fit
+    into any single coupling-map component continue to raise a :exc:`.TranspilerError`.
+    Fixes `#15841 <https://github.com/Qiskit/qiskit/issues/15841>`_.
